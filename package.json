@@ -4,7 +4,7 @@
   "description": "Live multi-device app for running the Retail Innovation Challenge: team submissions, panel review, ideation sprint, judged pitches and results.",
   "type": "module",
   "private": true,
-  "engines": { "node": ">=18" },
+  "engines": { "node": ">=20" },
   "scripts": {
     "start": "node server.js",
     "test": "node --test test/*.test.js"

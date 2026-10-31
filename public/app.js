@@ -10,7 +10,6 @@ let CODE = null;         // sign-in code for this device
 let OFFSET = 0;          // server clock - local clock
 let SAMPLES = false;     // rehearsal tools enabled on server
 let VIEW = 'control';    // facilitator tab
-let ES = null;
 const drafts = {};       // unsaved form input, keyed by element id — survives live re-renders
 
 const $ = (s) => document.querySelector(s);
@@ -29,32 +28,44 @@ function toast(msg) {
 }
 
 /* ---------- server I/O ---------- */
+function accept(d) {
+  if (!d || !d.state || (d.version != null && VERSION != null && d.version < VERSION)) return;
+  S = d.state; ME = d.me; SAMPLES = d.samples; OFFSET = d.now - Date.now(); VERSION = d.version;
+  render();
+}
+
 async function send(a) {
   try {
     const r = await fetch('/api/action', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-code': CODE }, body: JSON.stringify(a) });
     const j = await r.json().catch(() => ({}));
     if (r.status === 401) { signOut(); toast(j.error || 'Sign in again.'); return false; }
     if (!r.ok) { toast(j.error || 'That did not work.'); return false; }
+    accept(j);
     if (j.toast) toast(j.toast);
     return true;
   } catch { toast('Not connected. Check the network and try again.'); return false; }
 }
 
+// Live sync: ask the server about once a second whether anything changed (204 = no change).
+let POLL = 0; let VERSION = null; let FAILS = 0;
 function connect() {
-  ES?.close();
-  setConn('connecting');
-  ES = new EventSource('/api/events?code=' + encodeURIComponent(CODE));
-  ES.addEventListener('state', (e) => {
-    const d = JSON.parse(e.data);
-    S = d.state; ME = d.me; SAMPLES = d.samples; OFFSET = d.now - Date.now();
-    setConn('on'); render();
-  });
-  ES.onerror = async () => {
-    setConn('off');
-    // A rejected code (e.g. after an event reset) shouldn't retry forever.
-    try { const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: CODE }) }); if (r.status === 401) signOut(); } catch {}
+  const gen = ++POLL; VERSION = null; setConn('connecting');
+  const loop = async () => {
+    if (gen !== POLL) return;
+    try {
+      const q = new URLSearchParams({ code: CODE }); if (VERSION != null) q.set('v', VERSION);
+      const r = await fetch('/api/state?' + q, { cache: 'no-store' });
+      if (gen !== POLL) return;
+      if (r.status === 401) { signOut(); toast('Sign in again.'); return; }
+      if (r.status === 200) accept(await r.json());
+      if (r.ok) { FAILS = 0; setConn('on'); } else throw new Error(r.status);
+    } catch { FAILS++; setConn('off'); }
+    const wait = document.hidden ? 5000 : Math.min(1000 * 2 ** Math.max(0, FAILS - 1), 8000);
+    setTimeout(loop, wait);
   };
+  loop();
 }
+document.addEventListener('visibilitychange', () => { if (!document.hidden && CODE) connect(); });
 function setConn(s) { const el = $('#conn'); if (el) { el.className = 'conn ' + s; el.textContent = s === 'on' ? 'LIVE' : s === 'off' ? 'RECONNECTING…' : 'CONNECTING…'; } }
 
 async function signIn(code) {
@@ -64,7 +75,7 @@ async function signIn(code) {
   if (!r.ok) { store.set('ric-code', null); render(); return toast(j.error || 'That code was not recognised.'); }
   CODE = code.trim(); ME = j.me; store.set('ric-code', CODE); connect();
 }
-function signOut() { ES?.close(); ES = null; CODE = null; ME = null; S = null; store.set('ric-code', null); render(); }
+function signOut() { POLL++; VERSION = null; CODE = null; ME = null; S = null; store.set('ric-code', null); render(); }
 
 /* ---------- chrome ---------- */
 const ROLE_NAME = { facilitator: 'Facilitator', team: 'Team', panel: 'Review panel', judge: 'Judge', projector: 'Projector' };
@@ -73,7 +84,7 @@ function renderChrome() {
   $('#eyebrow').textContent = S?.event.eyebrow || 'Live event';
   if (!S) { $('#who').innerHTML = ''; $('#roles').innerHTML = ''; $('#stepper').innerHTML = ''; $('#foot').textContent = ''; return; }
   const name = ME.role === 'team' ? team(S, ME.teamId).name : ME.role === 'judge' ? S.judges[ME.judge].name : ROLE_NAME[ME.role];
-  $('#who').innerHTML = `<span class="conn on" id="conn">LIVE</span><span class="tag">${esc(name)}</span><button class="link" data-act="signout">Sign out</button>`;
+  $('#who').innerHTML = `<span class="conn ${FAILS ? 'off' : 'on'}" id="conn">${FAILS ? 'RECONNECTING…' : 'LIVE'}</span><span class="tag">${esc(name)}</span><button class="link" data-act="signout">Sign out</button>`;
   $('#roles').innerHTML = ME.role === 'facilitator'
     ? [['control', 'Control', 'Runs the session'], ['projector', 'Projector preview', 'What the big screen shows'], ['codes', 'Sign-in codes', 'Hand out to devices']]
       .map(([id, l, s]) => `<button data-act="view" data-id="${id}" aria-pressed="${VIEW === id}">${l}<small>${s}</small></button>`).join('')
