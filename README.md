@@ -15,7 +15,7 @@ Session flow: **Challenge submissions → Challenges locked → Ideation sprint 
 
 ## Run it
 
-Needs Node.js 20 or newer. There are no dependencies to install.
+Needs Node.js 22. There are no dependencies to install.
 
 ```bash
 npm start
@@ -38,6 +38,9 @@ The facilitator's **Sign-in codes** tab lists them all, ready to hand out. A dev
 The facilitator screen has rehearsal buttons at each stage. They fill in sample submissions, canvases or judge scores so you can click through the whole session. **Reset event** clears everything and keeps the sign-in codes.
 
 ## Hosting on Vercel
+
+Live at **https://retail-innovation-challenge.vercel.app**. The Vercel project `retail-innovation-challenge` is linked to this GitHub repository, so every push to the production branch deploys automatically. Event data lives in the Supabase project **Innova**.
+
 
 The repository deploys to Vercel as-is (`vercel.json` is included). Static files come from `public/`, and `api/index.js` runs the API as a serverless function.
 Serverless functions can't keep state, so on Vercel the event is stored in Supabase:
