@@ -1,0 +1,12 @@
+{
+  "name": "retail-innovation-challenge",
+  "version": "1.0.0",
+  "description": "Live multi-device app for running the Retail Innovation Challenge: team submissions, panel review, ideation sprint, judged pitches and results.",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  }
+}
