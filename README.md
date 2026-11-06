@@ -20,13 +20,13 @@ A live, multi-device app for running the Innovation Challenge. Each role signs i
 
 ## AI assistant (optional)
 
-When `ANTHROPIC_API_KEY` is set, the app adds three helpers powered by Claude (`claude-opus-5-5`, low effort, with Anthropic's default refusal fallback):
+When `GEMINI_API_KEY` is set, the app adds three helpers powered by Google Gemini (`gemini-3.8-flash` by default; set `GEMINI_MODEL` to use another model). A free API key from [Google AI Studio](https://aistudio.google.com/apikey) works, within Google's free-tier rate limits:
 
 - **Root-cause hints** for teams: three probing questions, never the answer. Up to 3 per team.
 - **Solution drafts** for teams, built on their root cause. Up to 2 per team. The team chooses whether to use one and can edit it.
 - **Team briefings** for panelists and the facilitator during pitches and follow-up: a two-sentence summary, strengths, and questions to ask.
 
-A failed request doesn't count against a team's limit. Without the key, the buttons don't appear. The code is in `shared/ai.js`.
+A failed request (including a free-tier rate limit) doesn't count against a team's limit. Without the key, the buttons don't appear. The code is in `shared/ai.js`.
 
 The facilitator can pause any timer, add a minute, or move back a stage. Going back to Challenges unlocks them.
 
@@ -70,7 +70,8 @@ Serverless functions can't keep state, so on Vercel the event is stored in Supab
 | `SUPABASE_KEY` | The project's publishable key |
 | `RIC_SERVER_KEY` | The random server key from step 1 (mark as sensitive) |
 | `FACILITATOR_CODE` | The facilitator's sign-in code. Every other code is on the facilitator's "Teams & codes" tab |
-| `ANTHROPIC_API_KEY` | Optional. Turns on the AI assistant (mark as sensitive) |
+| `GEMINI_API_KEY` | Optional. Turns on the AI assistant (mark as sensitive) |
+| `GEMINI_MODEL` | Optional. Gemini model ID, default `gemini-3.8-flash` |
 | `EVENT_ID` | Optional. Defaults to `main`; change it to run a separate event in the same database |
 
 ## How it works
