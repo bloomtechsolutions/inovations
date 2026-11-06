@@ -20,7 +20,7 @@ A live, multi-device app for running the Innovation Challenge. Each role signs i
 
 ## AI assistant (optional)
 
-When `GEMINI_API_KEY` is set, the app adds three helpers powered by Google Gemini (`gemini-3.8-flash` by default; set `GEMINI_MODEL` to use another model). A free API key from [Google AI Studio](https://aistudio.google.com/apikey) works, within Google's free-tier rate limits:
+When `GEMINI_API_KEY` is set, the app adds three helpers powered by Google Gemini (`gemini-3.5-flash-lite` by default, which answered in about a second in testing; set `GEMINI_MODEL` to use another model). A free API key from [Google AI Studio](https://aistudio.google.com/apikey) works, within Google's free-tier rate limits:
 
 - **Root-cause hints** for teams: three probing questions, never the answer. Up to 3 per team.
 - **Solution drafts** for teams, built on their root cause. Up to 2 per team. The team chooses whether to use one and can edit it.
@@ -71,7 +71,7 @@ Serverless functions can't keep state, so on Vercel the event is stored in Supab
 | `RIC_SERVER_KEY` | The random server key from step 1 (mark as sensitive) |
 | `FACILITATOR_CODE` | The facilitator's sign-in code. Every other code is on the facilitator's "Teams & codes" tab |
 | `GEMINI_API_KEY` | Optional. Turns on the AI assistant (mark as sensitive) |
-| `GEMINI_MODEL` | Optional. Gemini model ID, default `gemini-3.8-flash` |
+| `GEMINI_MODEL` | Optional. Gemini model ID, default `gemini-3.5-flash-lite` |
 | `GEMINI_FALLBACK_MODEL` | Optional. Model for the retry when the main one is slow. By default a Flash-Lite model is picked from the models the key can use |
 | `GEMINI_THINKING` | Optional. Thinking level for the first try: `MINIMAL`, `LOW` (default), `MEDIUM` or `HIGH` |
 | `EVENT_ID` | Optional. Defaults to `main`; change it to run a separate event in the same database |
