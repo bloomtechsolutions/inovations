@@ -4,24 +4,39 @@ A live, multi-device app for running the Innovation Challenge. Each role signs i
 
 | Role | Device | What it does |
 |---|---|---|
-| **Facilitator** | Laptop | Moves every screen between stages, runs the timers, renames teams, downloads a CSV, sees every sign-in code |
-| **Team** (×6) | One per team, used by the team's representative | Enters the team's one challenge, then fills in the root cause (5 whys) and the solution |
-| **Panelist** (×2) | Laptop/tablet/phone | Approves challenges (one approval is enough) or sends them back with a comment, then follows each pitch |
-| **Projector** | Big screen | Read only: challenge board, locked challenges, big countdowns, pitch slide |
+| **Facilitator** | Laptop | Moves every screen between stages, runs the timers, renames teams, updates follow-ups, downloads a CSV, sees every sign-in code |
+| **Team** (×6) | One per team, used by the team's representative | Enters the team's one challenge, then fills in the root cause (5 whys) and the solution, with optional AI hints and drafts |
+| **Panelist** (×2) | Laptop/tablet/phone | Approves challenges (one approval is enough) or sends them back with a comment, then follows each pitch (with an optional AI briefing per team) and records follow-ups |
+| **Projector** | Big screen | Read only: challenge board, locked challenges, big countdowns, pitch slide, follow-up board |
 
 ## Event flow
 
-1. **Challenges.** Each team enters one challenge: an internal process, a customer pain point or a new way to serve customers. The team then explains it to the panel. Either panelist can approve it or send it back with a comment. The big screen shows every challenge as it comes in.
+1. **Challenges.** Each team enters one challenge: an internal process or a customer pain point. The team then explains it to the panel. Either panelist can approve it or send it back with a comment. The big screen shows every challenge as it comes in.
 2. **Locked.** When all six challenges are approved, they lock automatically and the big screen shows them.
 3. **Root cause (5 min).** Teams ask "why?" up to five times and write down the root cause.
 4. **Solution (20 min).** Teams design a solution for that root cause. Their work saves as they type. When a timer runs out, saving stops (after a 15-second grace period).
 5. **Pitches (5 min each).** The big screen shows the team's challenge, root cause and solution with a countdown. Panelists see each team's full work on their device. After the last pitch, the panel chooses the best challenge and solution.
+6. **Follow-up.** So the ideas keep moving after the event, the facilitator or a panelist gives each solution an owner, a pilot status (Not started, Planning, Piloting, Rolled out, On hold), a next step and a target date. Teams and the big screen see the board, and it is included in the CSV.
+
+## AI assistant (optional)
+
+When `ANTHROPIC_API_KEY` is set, the app adds three helpers powered by Claude (`claude-opus-5-5`, low effort, with Anthropic's default refusal fallback):
+
+- **Root-cause hints** for teams: three probing questions, never the answer. Up to 3 per team.
+- **Solution drafts** for teams, built on their root cause. Up to 2 per team. The team chooses whether to use one and can edit it.
+- **Team briefings** for panelists and the facilitator during pitches and follow-up: a two-sentence summary, strengths, and questions to ask.
+
+A failed request doesn't count against a team's limit. Without the key, the buttons don't appear. The code is in `shared/ai.js`.
 
 The facilitator can pause any timer, add a minute, or move back a stage. Going back to Challenges unlocks them.
 
 ## Run it locally
 
-Needs Node.js 22. There are no dependencies to install.
+Needs Node.js 22.
+
+```bash
+npm install
+```
 
 ```bash
 npm start
@@ -55,6 +70,7 @@ Serverless functions can't keep state, so on Vercel the event is stored in Supab
 | `SUPABASE_KEY` | The project's publishable key |
 | `RIC_SERVER_KEY` | The random server key from step 1 (mark as sensitive) |
 | `FACILITATOR_CODE` | The facilitator's sign-in code. Every other code is on the facilitator's "Teams & codes" tab |
+| `ANTHROPIC_API_KEY` | Optional. Turns on the AI assistant (mark as sensitive) |
 | `EVENT_ID` | Optional. Defaults to `main`; change it to run a separate event in the same database |
 
 ## How it works

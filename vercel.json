@@ -1,16 +1,30 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "installCommand": "",
+  "installCommand": "npm install",
   "buildCommand": "mkdir -p public/shared && cp shared/logic.js public/shared/logic.js",
   "outputDirectory": "public",
   "rewrites": [
-    { "source": "/api/:route", "destination": "/api/index?route=:route" }
+    {
+      "source": "/api/:route",
+      "destination": "/api/index?route=:route"
+    }
   ],
   "functions": {
-    "api/index.js": { "includeFiles": "{config,samples}.json", "maxDuration": 10 }
+    "api/index.js": {
+      "includeFiles": "{config,samples}.json",
+      "maxDuration": 60
+    }
   },
   "headers": [
-    { "source": "/(.*)", "headers": [{ "key": "X-Content-Type-Options", "value": "nosniff" }] }
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        }
+      ]
+    }
   ]
 }

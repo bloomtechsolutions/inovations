@@ -1,12 +1,17 @@
 {
   "name": "bml-innovation-challenge-2026",
   "version": "1.0.0",
-  "description": "Live multi-device app for the BML Refresher Training 2026 Innovation Challenge: challenges, root cause, solution, judged pitches and results.",
+  "description": "Live multi-device app for the BML Refresher Training 2026 Innovation Challenge: challenges, root cause, solution, pitches, follow-up and an AI assistant.",
   "type": "module",
   "private": true,
-  "engines": { "node": "22.x" },
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "start": "node server.js",
     "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.6.0"
   }
 }

@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createApi, supabaseStore } from '../shared/api.js';
+import { createAi } from '../shared/ai.js';
 
 const env = process.env;
 const readJSON = (f) => JSON.parse(fs.readFileSync(path.join(process.cwd(), f), 'utf8'));
@@ -9,7 +10,7 @@ const config = readJSON('config.json');
 const samples = env.SAMPLE_TOOLS === 'off' ? null : readJSON('samples.json');
 const handle = createApi({
   store: supabaseStore({ url: env.SUPABASE_URL, apiKey: env.SUPABASE_KEY, serverKey: env.RIC_SERVER_KEY, eventId: env.EVENT_ID || 'main' }),
-  config, samples, env,
+  config, samples, env, ai: createAi(env),
 });
 
 export default async function (req, res) {

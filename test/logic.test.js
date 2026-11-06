@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { createState, apply, identify, redact, isUserError, remaining, timeUp, ROOT_SECONDS, SOLUTION_SECONDS } from '../shared/logic.js';
+import { createState, apply, identify, redact, isUserError, remaining, timeUp, followOf, aiLeft, CATS, ROOT_SECONDS, SOLUTION_SECONDS } from '../shared/logic.js';
 
 const config = JSON.parse(fs.readFileSync(new URL('../config.json', import.meta.url)));
 const samples = JSON.parse(fs.readFileSync(new URL('../samples.json', import.meta.url)));
@@ -80,6 +80,7 @@ test('root cause and solution saves stop when time is up', () => {
 test('pitches are the last stage; teams see every pitch', () => {
   const S = createState(config); approveAll(S);
   throwsUser(() => apply(S, FAC, { type: 'phase', id: 'results' }), /Unknown stage/);
+  assert.deepEqual(CATS, ['Internal process', 'Customer pain point']);
   apply(S, FAC, { type: 'phase', id: 'root' });
   apply(S, teamMe(S, 1), { type: 'save-root', w: { root: 'r1' } });
   apply(S, FAC, { type: 'phase', id: 'pitch' });
@@ -101,4 +102,34 @@ test('rehearsal tools fill a complete event', () => {
   apply(S, FAC, { type: 'reset-round' });
   assert.equal(S.phase, 'submit');
   assert.ok(S.teams.every((t) => !t.ch));
+});
+
+test('follow-up: panel and facilitator record owner and pilot status', () => {
+  const S = createState(config); approveAll(S);
+  const id = S.teams[2].id;
+  throwsUser(() => apply(S, P0, { type: 'follow', id, f: {} }), /stage/);
+  apply(S, FAC, { type: 'phase', id: 'followup' });
+  throwsUser(() => apply(S, teamMe(S, 0), { type: 'follow', id, f: {} }), /not allowed/);
+  apply(S, P1, { type: 'follow', id, f: { owner: 'Aminath', status: 'Piloting', next: 'Pilot in 2 lounges', due: '2027-01-31' } });
+  apply(S, FAC, { type: 'follow', id: S.teams[3].id, f: { status: 'Made up' } });
+  assert.equal(followOf(S, id).status, 'Piloting'); assert.equal(followOf(S, id).owner, 'Aminath');
+  assert.equal(followOf(S, S.teams[3].id).status, 'Not started');
+  assert.equal(redact(S, teamMe(S, 0)).followup[id].owner, 'Aminath');
+});
+
+test('AI use is limited per team and stage, and refunded on failure', () => {
+  const S = createState(config); approveAll(S);
+  const T0 = teamMe(S, 0);
+  throwsUser(() => apply(S, T0, { type: 'ai-use', kind: 'hint' }), /stage/);
+  apply(S, FAC, { type: 'phase', id: 'root' });
+  for (let i = 0; i < 3; i++) apply(S, T0, { type: 'ai-use', kind: 'hint' });
+  throwsUser(() => apply(S, T0, { type: 'ai-use', kind: 'hint' }), /used all 3 hints/);
+  apply(S, T0, { type: 'ai-refund', kind: 'hint' });
+  assert.equal(aiLeft(S, S.teams[0].id, 'hint'), 1);
+  assert.equal(aiLeft(S, S.teams[1].id, 'hint'), 3);
+  throwsUser(() => apply(S, T0, { type: 'ai-use', kind: 'draft' }), /stage/);
+  throwsUser(() => apply(S, P0, { type: 'ai-use', kind: 'summary', id: S.teams[0].id }), /stage/);
+  apply(S, FAC, { type: 'phase', id: 'pitch' });
+  apply(S, P0, { type: 'ai-use', kind: 'summary', id: S.teams[0].id });
+  throwsUser(() => apply(S, T0, { type: 'ai-use', kind: 'summary', id: S.teams[0].id }), /not allowed/);
 });

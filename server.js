@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApi, fileStore, supabaseStore } from './shared/api.js';
+import { createAi } from './shared/ai.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const env = process.env;
@@ -16,7 +17,7 @@ const samples = env.SAMPLE_TOOLS === 'off' ? null : readJSON('samples.json');
 const store = env.SUPABASE_URL
   ? supabaseStore({ url: env.SUPABASE_URL, apiKey: env.SUPABASE_KEY, serverKey: env.RIC_SERVER_KEY, eventId: env.EVENT_ID })
   : fileStore(fs, path.join(env.DATA_DIR || path.join(ROOT, 'data'), 'state.json'));
-const handle = createApi({ store, config, samples, env });
+const handle = createApi({ store, config, samples, env, ai: createAi(env) });
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
 const PUBLIC = path.join(ROOT, 'public');

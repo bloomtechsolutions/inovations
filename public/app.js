@@ -1,5 +1,5 @@
 import {
-  CATS, PHASES, WHYS, statusLabel, team, curStatus, approvedCount, allApproved, phaseIdx,
+  CATS, PHASES, FOLLOW_STATUS, followOf, aiLeft, WHYS, statusLabel, team, curStatus, approvedCount, allApproved, phaseIdx,
   remaining, fmt, timeUp, TIMER_OF, workOf,
 } from '/shared/logic.js';
 
@@ -10,6 +10,9 @@ let CODE = null;         // sign-in code for this device
 let OFFSET = 0;          // server clock - local clock
 let SAMPLES = false;     // rehearsal tools enabled on server
 let VIEW = 'control';    // facilitator tab
+let AI_ON = false;       // server has an Anthropic API key
+let AI_BUSY = null;      // key of the assistant request in flight
+const AI_OUT = {};       // latest assistant answers, keyed by kind + team
 const drafts = {};       // unsaved form input, keyed by element id — survives live re-renders
 
 const $ = (s) => document.querySelector(s);
@@ -30,7 +33,7 @@ function toast(msg) {
 /* ---------- server I/O ---------- */
 function accept(d) {
   if (!d || !d.state || (d.version != null && VERSION != null && d.version < VERSION)) return;
-  S = d.state; ME = d.me; SAMPLES = d.samples; OFFSET = d.now - Date.now(); VERSION = d.version;
+  S = d.state; ME = d.me; SAMPLES = d.samples; AI_ON = !!d.ai; OFFSET = d.now - Date.now(); VERSION = d.version;
   render();
 }
 
@@ -160,8 +163,12 @@ function vFacilitator() {
     body = `<div class="card stack"><div><h2>Pitches · ${S.pitchIdx + 1} of ${n}</h2><p class="lede">On stage: <b>${esc(t.name)}</b>. The big screen shows their challenge, root cause and solution with the countdown.</p></div>
       ${timerCtl('pitchT')}
       <div class="row"><button class="btn" data-act="prev-team" ${S.pitchIdx ? '' : 'disabled'}>Previous team</button>
-      ${S.pitchIdx < n - 1 ? `<button class="btn primary" data-act="next-team">Next team</button>` : '<span class="lede" style="margin:0">This is the last team.</span>'}</div>
+      ${S.pitchIdx < n - 1 ? `<button class="btn primary" data-act="next-team">Next team</button>` : `<button class="btn primary" data-act="phase" data-id="followup">Move to Follow-up</button>`}</div>
       <ul class="board">${S.teams.map((tt, i) => `<li><div class="t"><b>${i + 1}. ${esc(tt.name)}</b><div>${esc(workOf(S, tt.id).title || tt.ch?.title)}</div></div>${i === S.pitchIdx ? '<span class="now-badge">On stage</span>' : i < S.pitchIdx ? '<span class="code">Done</span>' : ''}</li>`).join('')}</ul>
+      <div class="row"><button class="btn" data-act="export">Download everything (CSV)</button></div></div>`;
+  } else if (S.phase === 'followup') {
+    body = `<div class="card stack"><div><h2>Follow-up</h2><p class="lede">Give every solution an owner and a pilot status so the ideas keep moving after the event. You and the panelists can update this at any time; the big screen and the teams see it live.</p></div>
+      ${followBoard(true)}
       <div class="row"><button class="btn" data-act="export">Download everything (CSV)</button></div></div>`;
   }
   return `<div class="grid g2">${body}
@@ -243,6 +250,7 @@ function vTeam() {
       ${chBox}
       <div class="stack">${Array.from({ length: WHYS }, (_, i) => `<label class="f">Why ${i + 1}?<input type="text" id="w-why-${i}" maxlength="1200" value="${esc(w.whys[i])}" ${ro ? 'disabled' : ''} placeholder="${i === 0 ? 'Why does the problem happen?' : 'Why is that?'}"></label>`).join('')}</div>
       <label class="f">Our root cause <em>One sentence: the real reason behind the problem</em><textarea id="w-root" maxlength="1200" ${ro ? 'disabled' : ''}>${esc(w.root)}</textarea></label>
+      ${AI_ON && !ro ? aiTeamBox('hint', t) : ''}
       ${saveRow(ro, w.savedRoot, 'w-')}</form>`;
   }
   if (S.phase === 'solution') {
@@ -256,11 +264,52 @@ function vTeam() {
         <label class="f full">How will it work? <em>Steps, owners, timeline, what you need</em><textarea id="s-impl" maxlength="1200" ${ro ? 'disabled' : ''}>${esc(w.impl)}</textarea></label>
         <label class="f full">Expected impact <em>For customers and for the bank, with numbers if you have them</em><textarea id="s-benefits" maxlength="1200" ${ro ? 'disabled' : ''}>${esc(w.benefits)}</textarea></label>
       </div>
+      ${AI_ON && !ro ? aiTeamBox('draft', t) : ''}
       ${saveRow(ro, w.savedSol, 's-')}</form>`;
   }
   const onStage = S.phase === 'pitch' && S.teams[S.pitchIdx]?.id === t.id;
+  if (S.phase === 'followup') {
+    return `${head}<div class="grid g2" style="margin-top:16px"><div class="card stack"><h2>What happens next</h2><p class="lede" style="margin:0">The panel gives every solution an owner and tracks its pilot. This page updates as they do.</p>${followBoard(false)}</div>
+      <div class="card stack"><h2>Your pitch</h2>${summary(t, w)}</div></div>`;
+  }
   return `${head}<div class="card stack" style="margin-top:16px"><div class="row between"><h2>Your pitch</h2>${onStage ? '<span class="now-badge">You are on stage</span>' : '<span class="pill p-none">Locked</span>'}</div>
     ${summary(t, w)}</div>`;
+}
+const li = (x) => `<li>${esc(x)}</li>`;
+function aiTeamBox(kind, t) {
+  const left = aiLeft(S, t.id, kind); const busy = AI_BUSY === kind; const out = AI_OUT[kind];
+  const isHint = kind === 'hint';
+  let body = '';
+  if (out && isHint) body = `<ul class="plain">${(out.hints || []).map(li).join('')}</ul>`;
+  if (out && !isHint) body = `<dl class="kv"><dt>Name</dt><dd><b>${esc(out.title)}</b></dd><dt>What</dt><dd>${esc(out.approach)}</dd><dt>How</dt><dd>${esc(out.impl)}</dd><dt>Impact</dt><dd>${esc(out.benefits)}</dd></dl>
+    <div class="row"><button class="btn small" type="button" data-act="use-draft">Use this draft</button><span class="code">You can edit it afterwards.</span></div>`;
+  return `<div class="aibox"><div class="row between"><div><b>✨ AI coach</b><div class="code">${isHint ? 'Stuck? Get questions that push your thinking. It won\'t give you the answer.' : 'Get a draft solution built on your root cause.'}</div></div>
+    <button class="btn small" type="button" data-act="ai" data-kind="${kind}" ${left <= 0 || busy ? 'disabled' : ''}>${busy ? 'Thinking…' : (isHint ? 'Get a hint' : 'Draft a solution')} · ${Math.max(0, left)} left</button></div>${body}</div>`;
+}
+function aiSummaryBox(t) {
+  if (!AI_ON) return '';
+  const key = 'summary' + t.id; const out = AI_OUT[key]; const busy = AI_BUSY === key;
+  return `<div class="aibox"><div class="row between"><b>✨ AI briefing</b><button class="btn small" type="button" data-act="ai" data-kind="summary" data-id="${t.id}" ${busy ? 'disabled' : ''}>${busy ? 'Thinking…' : out ? 'Refresh' : 'Summarise this team'}</button></div>
+    ${out ? `<p style="margin:0">${esc(out.summary)}</p><dl class="kv"><dt>Strengths</dt><dd><ul class="plain">${(out.strengths || []).map(li).join('')}</ul></dd><dt>Ask them</dt><dd><ul class="plain">${(out.questions || []).map(li).join('')}</ul></dd></dl>` : ''}</div>`;
+}
+function followBoard(editable) {
+  return `<div class="stack">${S.teams.map((t) => {
+    const w = workOf(S, t.id); const f = followOf(S, t.id); const id = t.id;
+    const headline = `<div><span class="eyebrow">${esc(t.name)}</span><h3>${esc(w.title || t.ch?.title || '—')}</h3><div class="code">${esc(t.ch?.title || '')}</div></div>`;
+    if (!editable) {
+      return `<div class="qcard"><div class="row between">${headline}<span class="pill p-st-${FOLLOW_STATUS.indexOf(f.status)}">${esc(f.status)}</span></div>
+        <dl class="kv"><dt>Owner</dt><dd>${esc(f.owner || 'Not assigned yet')}</dd><dt>Next step</dt><dd>${esc(f.next || '—')}</dd><dt>Target date</dt><dd>${esc(f.due || '—')}</dd></dl></div>`;
+    }
+    return `<div class="qcard"><div class="row between">${headline}<span class="code">${f.saved ? 'Saved ' + esc(f.saved) : 'Not saved yet'}</span></div>
+      <div class="fgrid">
+        <label class="f">Owner <em>Who takes this forward</em><input type="text" id="f-owner-${id}" maxlength="80" value="${esc(f.owner)}"></label>
+        <label class="f">Pilot status<select id="f-status-${id}">${FOLLOW_STATUS.map((x) => `<option ${f.status === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+        <label class="f full">Next step<input type="text" id="f-next-${id}" maxlength="1200" value="${esc(f.next)}"></label>
+        <label class="f">Target date<input type="date" id="f-due-${id}" value="${esc(f.due)}"></label>
+      </div>
+      <div class="row"><button class="btn primary small" type="button" data-act="follow" data-id="${id}">Save</button></div>
+      ${aiSummaryBox(t)}</div>`;
+  }).join('')}</div>`;
 }
 function saveRow(ro, saved, prefix) {
   if (ro) return `<div class="note bad">Time is up. Your work was saved${saved ? ' at ' + esc(saved) : ''}.</div>`;
@@ -303,6 +352,9 @@ function vPanelist() {
         <li>When all ${n} are approved, the challenges lock and show on the big screen.</li></ul></div>
         <div class="card"><h3>A good challenge is</h3><ul class="plain"><li>A real problem for customers or staff</li><li>Specific enough to solve in 20 minutes</li><li>Something the team can influence</li><li>Different from the other teams' challenges</li></ul></div></div></div>`;
   }
+  if (S.phase === 'followup') {
+    return `${head}<div class="card stack" style="margin-top:16px"><div><h2>Follow-up</h2><p class="lede" style="margin:0">Agree an owner and a pilot status for each solution so the ideas don't stop here.</p></div>${followBoard(true)}</div>`;
+  }
   if (S.phase !== 'pitch') {
     const cards = S.teams.map((t) => { const w = workOf(S, t.id); return `<div class="card stack"><div><span class="eyebrow">${esc(t.name)}</span><h3>${esc(t.ch?.title)}</h3></div>
       <dl class="kv"><dt>Root cause</dt><dd>${esc(w.root || '—')}</dd><dt>Solution</dt><dd>${esc(w.title || '—')}</dd></dl></div>`; }).join('');
@@ -314,7 +366,8 @@ function vPanelist() {
     return `<div class="card stack" ${onStage ? 'style="border-color:var(--accent)"' : ''}>
       <div class="row between"><div><span class="eyebrow">Pitch ${i + 1} · ${esc(t.name)}</span><h3>${esc(w.title || t.ch?.title)}</h3></div>
       ${onStage ? '<span class="now-badge">On stage</span>' : ''}</div>
-      ${onStage ? summary(t, w) : `<details id="det-${t.id}"><summary>Challenge, root cause and solution</summary>${summary(t, w)}</details>`}</div>`;
+      ${onStage ? summary(t, w) : `<details id="det-${t.id}"><summary>Challenge, root cause and solution</summary>${summary(t, w)}</details>`}
+      ${aiSummaryBox(t)}</div>`;
   }).join('');
   return head + `<div class="grid" style="margin-top:16px;align-items:start;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr))">${cards}</div>`;
 }
@@ -345,6 +398,11 @@ function vProjector() {
      <div class="pitch"><div class="stack"><h2>${esc(w.title || c.title)}</h2>
        ${box('Challenge · ' + esc(c.cat), [c.title, c.problem].filter(Boolean).join(' — '))}${box('Root cause', w.root)}${box('Solution', w.approach)}${box('How it works', w.impl)}${box('Expected impact', w.benefits)}</div>
        <div class="stack"><div class="eyebrow">Time remaining</div>${timerEl('pitchT', true)}</div></div>`;
+  } else if (S.phase === 'followup') {
+    inner = `${top('After the event', 'From ideas to pilots')}
+     <div class="ptiles">${S.teams.map((t) => { const w = workOf(S, t.id); const f = followOf(S, t.id);
+      return `<div class="ptile ${['Piloting', 'Rolled out'].includes(f.status) ? 'ok' : ''}"><span class="tm">${esc(t.name)} · ${esc(f.status)}</span><span class="ch" style="font-size:21px">${esc(w.title || t.ch?.title)}</span>
+        <span class="st">Owner: ${esc(f.owner || 'to be agreed')}${f.due ? ' · by ' + esc(f.due) : ''}</span>${f.next ? `<span class="st">Next: ${esc(f.next)}</span>` : ''}</div>`; }).join('')}</div>`;
   }
   return `<div class="proj">${inner}<div class="brand">${esc(S.event.eyebrow)}</div></div>`;
 }
@@ -382,6 +440,24 @@ function tick() {
 }
 setInterval(tick, 250);
 
+/* ---------- AI assistant ---------- */
+async function askAi(kind, id) {
+  const key = kind === 'summary' ? kind + id : kind;
+  if (AI_BUSY) return;
+  const body = { kind, id };
+  if (kind === 'hint') body.w = readWork('save-root');
+  if (kind === 'draft') body.w = readWork('save-solution');
+  AI_BUSY = key; render();
+  try {
+    const r = await fetch('/api/ai', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-code': CODE }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 401) { AI_BUSY = null; signOut(); return; }
+    if (!r.ok) toast(j.error || 'The assistant could not answer right now.');
+    else { AI_OUT[key] = j.result; AI_BUSY = null; accept(j); return; }
+  } catch { toast('Not connected. Check the network and try again.'); }
+  AI_BUSY = null; render();
+}
+
 /* ---------- autosave (root cause & solution) ---------- */
 let saveTimer = null; let saving = null;
 function readWork(kind) {
@@ -410,10 +486,11 @@ function scheduleSave() {
 function exportCSV() {
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const head = ['Pitch order', 'Team', 'Type', 'Challenge', 'What happens today', 'Affects', 'Why it matters', 'Approved by',
-    ...Array.from({ length: WHYS }, (_, i) => 'Why ' + (i + 1)), 'Root cause', 'Solution', 'What we will do', 'How it works', 'Expected impact'];
+    ...Array.from({ length: WHYS }, (_, i) => 'Why ' + (i + 1)), 'Root cause', 'Solution', 'What we will do', 'How it works', 'Expected impact', 'Owner', 'Pilot status', 'Next step', 'Target date'];
   const out = [head.map(q).join(',')];
-  S.teams.forEach((t, i) => { const c = t.ch || {}; const w = workOf(S, t.id);
-    out.push([i + 1, t.name, c.cat, c.title, c.problem, c.affects, c.why, c.by, ...w.whys, w.root, w.title, w.approach, w.impl, w.benefits].map(q).join(',')); });
+  S.teams.forEach((t, i) => { const c = t.ch || {}; const w = workOf(S, t.id); const f = followOf(S, t.id);
+    out.push([i + 1, t.name, c.cat, c.title, c.problem, c.affects, c.why, c.by, ...w.whys, w.root, w.title, w.approach, w.impl, w.benefits,
+      f.owner, f.status, f.next, f.due].map(q).join(',')); });
   const blob = new Blob(['﻿' + out.join('\r\n')], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'innovation-challenge-2026.csv';
   document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
@@ -443,6 +520,19 @@ document.addEventListener('click', async (e) => {
     case 'phase':
       if (id === 'submit' && S.locked && !confirm('Go back to Stage 1? This unlocks the challenges so the panel can change them.')) return;
       break;
+    case 'ai': askAi(b.dataset.kind, id); return;
+    case 'use-draft': {
+      const d = AI_OUT.draft; if (!d) return;
+      const keys = ['title', 'approach', 'impl', 'benefits'];
+      if (keys.some((k) => document.getElementById('s-' + k)?.value.trim()) && !confirm('Replace what you have written with the AI draft?')) return;
+      keys.forEach((k) => { drafts['s-' + k] = d[k] || ''; });
+      render(); scheduleSave(); return;
+    }
+    case 'follow': {
+      const g = (k) => document.getElementById(`f-${k}-${id}`)?.value ?? '';
+      if (await send({ type: 'follow', id, f: { owner: g('owner'), status: g('status'), next: g('next'), due: g('due') } })) { ['owner', 'status', 'next', 'due'].forEach((k) => clearDrafts(`f-${k}-${id}`)); render(); }
+      return;
+    }
     case 'rename': { const name = document.getElementById('name-' + id)?.value || ''; if (await send({ type: 'rename', id, name })) { clearDrafts('name-' + id); render(); } return; }
     case 'refine': { const note = document.getElementById('note-' + id)?.value.trim() || ''; if (await send({ type: a, id, note })) { clearDrafts('note-' + id); render(); } return; }
   }

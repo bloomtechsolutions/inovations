@@ -23,7 +23,7 @@
   },
   {
    "title": "Atoll customers travel to Malé for simple requests",
-   "cat": "New way to serve customers",
+   "cat": "Customer pain point",
    "problem": "Some requests still need an in-person signature or a visit to a main branch.",
    "affects": "Customers living in the atolls",
    "why": "Travel cost and time for customers; lost goodwill."
@@ -37,7 +37,7 @@
   },
   {
    "title": "Customers queue for simple requests like statements and PIN resets",
-   "cat": "New way to serve customers",
+   "cat": "Customer pain point",
    "problem": "Every request takes a queue ticket, however simple it is.",
    "affects": "Lounge customers and staff",
    "why": "Long waits put off customers who came for advice or a sale."

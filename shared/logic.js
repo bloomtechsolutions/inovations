@@ -1,13 +1,17 @@
 // Shared rules for the Innovation Challenge.
 // Runs on the server (the only source of truth) and in the browser (derived views).
 
-export const CATS = ['Internal process', 'Customer pain point', 'New way to serve customers'];
+export const CATS = ['Internal process', 'Customer pain point'];
+export const FOLLOW_STATUS = ['Not started', 'Planning', 'Piloting', 'Rolled out', 'On hold'];
+/** How many AI hints / drafts each team may ask for. */
+export const AI_LIMITS = { hint: 3, draft: 2 };
 export const PHASES = [
   { id: 'submit', label: 'Challenges', sub: 'Stage 1 · submit & approve' },
   { id: 'locked', label: 'Locked', sub: 'All challenges confirmed' },
   { id: 'root', label: 'Root cause', sub: 'Stage 2 · 5 min' },
   { id: 'solution', label: 'Solution', sub: 'Stage 2 · 20 min' },
-  { id: 'pitch', label: 'Pitches', sub: 'Teams on stage' }];
+  { id: 'pitch', label: 'Pitches', sub: 'Teams on stage' },
+  { id: 'followup', label: 'Follow-up', sub: 'Owners & pilot status' }];
 export const statusLabel = { pending: 'Awaiting panel', approved: 'Approved', refine: 'Sent back', none: 'Not submitted' };
 
 export const ROOT_SECONDS = 5 * 60;
@@ -48,7 +52,7 @@ function freshRound() {
   return {
     phase: 'submit', locked: false,
     rootT: timer(ROOT_SECONDS), solT: timer(SOLUTION_SECONDS), pitchT: timer(PITCH_SECONDS),
-    pitchIdx: 0, work: {},
+    pitchIdx: 0, work: {}, followup: {}, ai: {},
   };
 }
 
@@ -73,7 +77,7 @@ export function redact(S, me) {
     out.teams.forEach((t) => { if (!(me.role === 'team' && me.teamId === t.id)) delete t.code; });
     out.panelists.forEach((x, i) => { if (!(me.role === 'panelist' && me.p === i)) delete x.code; });
   }
-  if (me.role === 'team' && S.phase !== 'pitch') {
+  if (me.role === 'team' && !['pitch', 'followup'].includes(S.phase)) {
     for (const k of Object.keys(out.work)) if (k !== me.teamId) delete out.work[k];
   }
   if (me.role === 'projector' && ['root', 'solution'].includes(S.phase)) {
@@ -99,6 +103,8 @@ export const timeUp = (x, now, grace = 0) => (x.start != null || x.acc > 0) && e
 
 export const emptyWork = () => ({ whys: Array(WHYS).fill(''), root: '', title: '', approach: '', impl: '', benefits: '', savedRoot: '', savedSol: '' });
 export const workOf = (S, id) => ({ ...emptyWork(), ...(S.work[id] || {}) });
+export const followOf = (S, id) => ({ owner: '', status: FOLLOW_STATUS[0], next: '', due: '', saved: '', ...(S.followup?.[id] || {}) });
+export const aiLeft = (S, teamId, kind) => AI_LIMITS[kind] - (S.ai?.[teamId]?.[kind] || 0);
 
 export function clock(S, now) {
   try {
@@ -183,7 +189,7 @@ export function apply(S, me, a, now = Date.now(), samples = null) {
       need(me, 'facilitator');
       Object.assign(S, freshRound());
       S.teams.forEach((t) => { t.ch = null; });
-      return { toast: 'Event reset. All challenges and team work were cleared.' };
+      return { toast: 'Event reset. All challenges, team work and follow-ups were cleared.' };
     }
 
     /* ----- panelists ----- */
@@ -230,6 +236,35 @@ export function apply(S, me, a, now = Date.now(), samples = null) {
       }
       S.work[me.teamId] = w;
       return a.quiet ? {} : { toast: 'Saved.' };
+    }
+
+    /* ----- follow-up (after the pitches) ----- */
+    case 'follow': {
+      need(me, 'facilitator', 'panelist'); needPhase(S, 'followup');
+      const t = T(a.id); const v = a.f || {};
+      (S.followup ||= {})[t.id] = {
+        owner: str(v.owner, 80), status: FOLLOW_STATUS.includes(v.status) ? v.status : FOLLOW_STATUS[0],
+        next: str(v.next, MAX.text), due: str(v.due, 40), saved: clock(S, now) };
+      return { toast: t.name + ' follow-up saved.' };
+    }
+
+    /* ----- AI assistant: checked and counted here, then the server asks Claude ----- */
+    case 'ai-use': {
+      if (a.kind === 'summary') { need(me, 'facilitator', 'panelist'); needPhase(S, 'pitch', 'followup'); T(a.id); return {}; }
+      if (!(a.kind in AI_LIMITS)) fail('Unknown assistant request.');
+      need(me, 'team');
+      const isHint = a.kind === 'hint';
+      needPhase(S, isHint ? 'root' : 'solution');
+      if (timeUp(S[isHint ? 'rootT' : 'solT'], now)) fail('Time is up.');
+      const used = ((S.ai ||= {})[me.teamId] ||= {});
+      if ((used[a.kind] || 0) >= AI_LIMITS[a.kind]) fail(`Your team has used all ${AI_LIMITS[a.kind]} ${isHint ? 'hints' : 'drafts'}.`);
+      used[a.kind] = (used[a.kind] || 0) + 1;
+      return {};
+    }
+    case 'ai-refund': { // the assistant failed, so the try does not count
+      need(me, 'team'); const used = S.ai?.[me.teamId];
+      if (used?.[a.kind] > 0) used[a.kind]--;
+      return {};
     }
 
     /* ----- rehearsal shortcuts (facilitator) ----- */
