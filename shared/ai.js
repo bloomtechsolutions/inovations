@@ -1,6 +1,6 @@
 // AI assistant for the Innovation Challenge: root-cause hints and solution drafts for teams,
 // and a quick briefing on each team for the panel. Server-side only (needs GEMINI_API_KEY).
-import { GoogleGenAI, ApiError } from '@google/genai';
+import { GoogleGenAI, ApiError, ThinkingLevel } from '@google/genai';
 import { workOf, followOf } from './logic.js';
 
 const DEFAULT_MODEL = 'gemini-3.8-flash';
@@ -44,37 +44,54 @@ const TASKS = {
 
 export class AiError extends Error {}
 
+const isSlow = (e) => (e instanceof ApiError ? [503, 504].includes(e.status) : e?.name === 'AbortError' || /time(d)? ?out|deadline/i.test(String(e?.message)));
+const rejectsThinking = (e) => e instanceof ApiError && e.status === 400 && /think/i.test(String(e.message));
+
 /** Returns ask(kind, S, teamId, live) or null when no API key is configured. */
 export function createAi(env) {
   if (!env.GEMINI_API_KEY) return null;
   const model = env.GEMINI_MODEL || DEFAULT_MODEL;
-  const httpOptions = { timeout: 50_000 };
+  // Short answers need little thinking: low first, and minimal on the retry if Gemini is slow.
+  const firstLevel = ThinkingLevel[String(env.GEMINI_THINKING || 'LOW').toUpperCase()] || ThinkingLevel.LOW;
+  const httpOptions = { timeout: 25_000 };
   if (env.GEMINI_BASE_URL) httpOptions.baseUrl = env.GEMINI_BASE_URL; // local testing only
   const client = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY, httpOptions });
+
+  const call = (task, prompt, level) => client.models.generateContent({
+    model,
+    contents: prompt,
+    config: {
+      systemInstruction: CONTEXT,
+      responseMimeType: 'application/json',
+      responseJsonSchema: task.schema,
+      maxOutputTokens: 8192,
+      ...(level ? { thinkingConfig: { thinkingLevel: level } } : {}),
+    },
+  });
+
   return async function ask(kind, S, teamId, live = {}) {
     const task = TASKS[kind]; if (!task) throw new AiError('Unknown assistant request.');
+    const prompt = task.ask(teamWork(S, teamId, live));
+    const started = Date.now();
     let res;
     try {
-      res = await client.models.generateContent({
-        model,
-        contents: task.ask(teamWork(S, teamId, live)),
-        config: {
-          systemInstruction: CONTEXT,
-          responseMimeType: 'application/json',
-          responseJsonSchema: task.schema,
-          maxOutputTokens: 8192,
-        },
-      });
+      try { res = await call(task, prompt, firstLevel); }
+      catch (e) {
+        if (rejectsThinking(e)) { console.warn('Gemini rejected thinkingLevel; retrying without it:', e.message); res = await call(task, prompt, null); }
+        else if (isSlow(e)) { console.warn(`Gemini ${kind} slow after ${Date.now() - started}ms (${e.status || e.name}); retrying with minimal thinking`); res = await call(task, prompt, ThinkingLevel.MINIMAL); }
+        else throw e;
+      }
     } catch (e) {
+      console.error(`Gemini ${kind} failed after ${Date.now() - started}ms:`, e.status || e.name, e.message);
+      if (isSlow(e)) throw new AiError('The assistant is taking too long right now. Try again in a minute.');
       if (e instanceof ApiError) {
-        console.error('Gemini API error', e.status, e.message);
         if (e.status === 429) throw new AiError('The assistant is busy (free limit reached for the moment). Try again in a minute.');
-        if (e.status === 400 || e.status === 401 || e.status === 403 || e.status === 404) throw new AiError('The assistant is not set up correctly. Ask the facilitator.');
+        if ([400, 401, 403, 404].includes(e.status)) throw new AiError('The assistant is not set up correctly. Ask the facilitator.');
         throw new AiError('The assistant could not answer right now. Try again.');
       }
-      if (e?.name === 'AbortError' || /timeout/i.test(String(e?.message))) throw new AiError('The assistant took too long. Try again.');
       throw e;
     }
+    console.log(`Gemini ${kind} answered in ${Date.now() - started}ms (${model})`);
     if (res.promptFeedback?.blockReason) throw new AiError('The assistant could not help with this one.');
     const out = res.text;
     if (!out) throw new AiError('The assistant could not help with this one.');
