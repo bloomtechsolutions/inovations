@@ -72,6 +72,7 @@ Serverless functions can't keep state, so on Vercel the event is stored in Supab
 | `FACILITATOR_CODE` | The facilitator's sign-in code. Every other code is on the facilitator's "Teams & codes" tab |
 | `GEMINI_API_KEY` | Optional. Turns on the AI assistant (mark as sensitive) |
 | `GEMINI_MODEL` | Optional. Gemini model ID, default `gemini-3.8-flash` |
+| `GEMINI_FALLBACK_MODEL` | Optional. Model for the retry when the main one is slow. By default a Flash-Lite model is picked from the models the key can use |
 | `GEMINI_THINKING` | Optional. Thinking level for the first try: `MINIMAL`, `LOW` (default), `MEDIUM` or `HIGH` |
 | `EVENT_ID` | Optional. Defaults to `main`; change it to run a separate event in the same database |
 

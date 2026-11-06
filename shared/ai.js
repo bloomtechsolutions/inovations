@@ -66,9 +66,33 @@ export function createAi(env) {
   const client = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY, ...(baseUrl ? { httpOptions: { baseUrl } } : {}) });
   let useThinking = true; // switched off for good if the model rejects the thinking setting
 
+  // The models this key can use, read once from Google, so a fallback is picked from real names.
+  let fallbackModel = env.GEMINI_FALLBACK_MODEL || null;
+  let listed = null;
+  async function listModels() {
+    if (listed) return listed;
+    listed = (async () => {
+      try {
+        const names = [];
+        for await (const m of await client.models.list({ config: { pageSize: 100, httpOptions: { timeout: 8_000 } } })) {
+          if (!m.supportedActions || m.supportedActions.includes('generateContent')) names.push(String(m.name || '').replace(/^models\//, ''));
+        }
+        console.log('Gemini models for this key:', names.join(', '));
+        if (!fallbackModel) {
+          const ver = (n) => (n.match(/(\d+(?:\.\d+)?)/) || [0, 0])[1] * 1;
+          const lite = names.filter((n) => /flash-lite/.test(n) && n !== model && !/image|tts|audio|live|embed/.test(n))
+            .sort((a, b) => (/preview|exp/.test(a) - /preview|exp/.test(b)) || ver(b) - ver(a) || a.length - b.length);
+          fallbackModel = lite[0] || null;
+        }
+        console.log('Gemini fallback model:', fallbackModel || '(none found)');
+      } catch (e) { console.warn('Could not list Gemini models:', e.status || e.name, e.message); }
+    })();
+    return listed;
+  }
+
   // strict: Gemini's JSON mode with our schema. Otherwise plain text with the JSON shape in the prompt,
   // which avoids JSON-mode replies that never end.
-  async function call(task, prompt, strict, timeout) {
+  async function call(task, prompt, strict, timeout, useModel = model) {
     const config = {
       systemInstruction: CONTEXT,
       maxOutputTokens: 2048,
@@ -77,9 +101,9 @@ export function createAi(env) {
       ...(strict ? { responseMimeType: 'application/json', responseJsonSchema: task.schema } : {}),
     };
     const contents = strict ? prompt : `${prompt}\n\nReply with only a JSON object of exactly this shape, and nothing else: ${shapeOf(task.schema)}`;
-    try { return await client.models.generateContent({ model, contents, config }); }
+    try { return await client.models.generateContent({ model: useModel, contents, config }); }
     catch (e) {
-      if (useThinking && rejectsThinking(e)) { console.warn('Gemini rejected the thinking setting; continuing without it:', e.message); useThinking = false; return call(task, prompt, strict, timeout); }
+      if (useThinking && rejectsThinking(e)) { console.warn('Gemini rejected the thinking setting; continuing without it:', e.message); useThinking = false; return call(task, prompt, strict, timeout, useModel); }
       throw e;
     }
   }
@@ -88,11 +112,12 @@ export function createAi(env) {
   return async function ask(kind, S, teamId, live = {}) {
     const task = TASKS[kind]; if (!task) throw new AiError('Unknown assistant request.');
     const prompt = task.ask(teamWork(S, teamId, live));
+    await listModels();
     const started = Date.now();
-    let res, out = null;
+    let res, out = null, used = model;
     try {
       try {
-        res = await call(task, prompt, true, 20_000);
+        res = await call(task, prompt, true, 18_000);
         out = parseJson(res.text);
         if (!out) console.warn(`Gemini ${kind} strict reply unusable after ${Date.now() - started}ms (${describe(res)}); retrying in text mode`);
       } catch (e) {
@@ -101,7 +126,9 @@ export function createAi(env) {
       }
       if (!out) {
         if (res?.promptFeedback?.blockReason) throw new AiError('The assistant could not help with this one.');
-        res = await call(task, prompt, false, 30_000);
+        used = fallbackModel || model;
+        if (used !== model) console.warn(`Gemini ${kind}: retrying on ${used}`);
+        res = await call(task, prompt, false, 28_000, used);
         out = parseJson(res.text);
       }
     } catch (e) {
@@ -117,7 +144,7 @@ export function createAi(env) {
     }
     if (res?.promptFeedback?.blockReason) throw new AiError('The assistant could not help with this one.');
     if (!out) { console.error(`Gemini ${kind} gave no usable JSON (${describe(res)}): ${String(res?.text).slice(0, 300)}`); throw new AiError('The assistant gave an unreadable answer. Try again.'); }
-    console.log(`Gemini ${kind} answered in ${Date.now() - started}ms (${model}, ${describe(res)})`);
+    console.log(`Gemini ${kind} answered in ${Date.now() - started}ms (${used}, ${describe(res)})`);
     return out;
   };
 }
