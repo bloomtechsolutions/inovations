@@ -1,11 +1,11 @@
 import {
-  CATS, STAGES, CRIT, PHASES, statusLabel, team, act, teamState, curStatus, similarTo,
-  approvedCount, allApproved, phaseIdx, remaining, fmt, canvasOf, judgeTotal, results,
+  CATS, CRIT, PHASES, WHYS, statusLabel, team, curStatus, approvedCount, allApproved, phaseIdx,
+  remaining, fmt, timeUp, TIMER_OF, workOf, judgeTotal, results,
 } from '/shared/logic.js';
 
 /* ---------- client state ---------- */
 let S = null;            // server state (redacted for this device)
-let ME = null;           // { role, teamId?, judge? }
+let ME = null;           // { role, teamId?, p? }
 let CODE = null;         // sign-in code for this device
 let OFFSET = 0;          // server clock - local clock
 let SAMPLES = false;     // rehearsal tools enabled on server
@@ -34,16 +34,16 @@ function accept(d) {
   render();
 }
 
-async function send(a) {
+async function send(a, { quiet = false } = {}) {
   try {
     const r = await fetch('/api/action', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-code': CODE }, body: JSON.stringify(a) });
     const j = await r.json().catch(() => ({}));
     if (r.status === 401) { signOut(); toast(j.error || 'Sign in again.'); return false; }
-    if (!r.ok) { toast(j.error || 'That did not work.'); return false; }
+    if (!r.ok) { if (!quiet || r.status === 400) toast(j.error || 'That did not work.'); return false; }
     accept(j);
     if (j.toast) toast(j.toast);
     return true;
-  } catch { toast('Not connected. Check the network and try again.'); return false; }
+  } catch { if (!quiet) toast('Not connected. Check the network and try again.'); return false; }
 }
 
 // Live sync: ask the server about once a second whether anything changed (204 = no change).
@@ -77,16 +77,33 @@ async function signIn(code) {
 }
 function signOut() { POLL++; VERSION = null; CODE = null; ME = null; S = null; store.set('ric-code', null); render(); }
 
+/* ---------- shared bits ---------- */
+const ROLE_NAME = { facilitator: 'Facilitator', team: 'Team', panelist: 'Panelist', projector: 'Projector' };
+const ordinal = (n) => n + ((n % 100 >= 11 && n % 100 <= 13) ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th'));
+const timerClass = (key, r, big) => {
+  if (big && r === 0) return 'done';
+  const red = key === 'pitchT' ? 30 : 60, amber = key === 'pitchT' ? 60 : key === 'rootT' ? 120 : 300;
+  return r <= red ? 'red' : r <= amber ? 'amber' : '';
+};
+const timerEl = (key, big) => { const r = remaining(S[key], now()); return `<div class="${big ? 'bigtimer' : 'timer-sm'} ${timerClass(key, r, big)}" data-timer="${key}" ${big ? 'data-big="1"' : ''}>${fmt(r)}</div>`; };
+function timerCtl(key) {
+  const x = S[key];
+  return `<div class="row between">${timerEl(key)}<div class="row">
+    ${x.start ? `<button class="btn" data-act="t-pause" data-id="${key}">Pause</button>` : `<button class="btn primary" data-act="t-start" data-id="${key}">${x.acc ? 'Resume' : 'Start ' + fmt(x.dur)}</button>`}
+    <button class="btn" data-act="t-add" data-id="${key}">+1 min</button><button class="btn" data-act="t-reset" data-id="${key}">Reset</button></div></div>`;
+}
+const chDetails = (c) => `<dl class="kv"><dt>Today</dt><dd>${esc(c.problem)}</dd><dt>Affects</dt><dd>${esc(c.affects || '—')}</dd><dt>Why it matters</dt><dd>${esc(c.why || '—')}</dd></dl>`;
+const lines = (arr) => arr.filter(Boolean).map((x, i) => `<li><span class="code">Why ${i + 1}</span> ${esc(x)}</li>`).join('');
+
 /* ---------- chrome ---------- */
-const ROLE_NAME = { facilitator: 'Facilitator', team: 'Team', panel: 'Review panel', judge: 'Judge', projector: 'Projector' };
 function renderChrome() {
   document.body.classList.toggle('projector-only', ME?.role === 'projector');
-  $('#eyebrow').textContent = S?.event.eyebrow || 'Live event';
+  $('#eyebrow').textContent = S?.event.eyebrow || 'Bank of Maldives · Refresher Training 2026';
   if (!S) { $('#who').innerHTML = ''; $('#roles').innerHTML = ''; $('#stepper').innerHTML = ''; $('#foot').textContent = ''; return; }
-  const name = ME.role === 'team' ? team(S, ME.teamId).name : ME.role === 'judge' ? S.judges[ME.judge].name : ROLE_NAME[ME.role];
+  const name = ME.role === 'team' ? team(S, ME.teamId).name : ME.role === 'panelist' ? S.panelists[ME.p].name : ROLE_NAME[ME.role];
   $('#who').innerHTML = `<span class="conn ${FAILS ? 'off' : 'on'}" id="conn">${FAILS ? 'RECONNECTING…' : 'LIVE'}</span><span class="tag">${esc(name)}</span><button class="link" data-act="signout">Sign out</button>`;
   $('#roles').innerHTML = ME.role === 'facilitator'
-    ? [['control', 'Control', 'Runs the session'], ['projector', 'Projector preview', 'What the big screen shows'], ['codes', 'Sign-in codes', 'Hand out to devices']]
+    ? [['control', 'Control', 'Runs the event'], ['projector', 'Projector preview', 'What the big screen shows'], ['codes', 'Teams & codes', 'Hand out to devices']]
       .map(([id, l, s]) => `<button data-act="view" data-id="${id}" aria-pressed="${VIEW === id}">${l}<small>${s}</small></button>`).join('')
     : '';
   const pi = phaseIdx(S);
@@ -97,198 +114,220 @@ function renderChrome() {
 /* ---------- sign-in ---------- */
 function vLogin() {
   return `<form class="card stack login" data-form="login">
-    <div><h2>Sign in</h2><p class="lede">Enter the code you were given. Teams, judges, the review panel, the projector and the facilitator each have their own code.</p></div>
-    <label class="f">Your code<input type="text" id="login-code" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="e.g. ADD-7K2Q" required></label>
+    <div><h2>Sign in</h2><p class="lede">Enter the code you were given. Each team, each panelist, the projector and the facilitator have their own code.</p></div>
+    <label class="f">Your code<input type="text" id="login-code" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="e.g. 1-7K2Q" required></label>
     <div class="row"><button class="btn primary" type="submit">Sign in</button></div>
-    <p class="lede" style="margin:0;font-size:13px">Facilitator: your code is printed in the server console when it starts.</p>
   </form>`;
 }
 
 /* ---------- facilitator ---------- */
-const demo = (act, label) => (SAMPLES ? `<div class="demo"><b>Rehearsal tools</b><div class="row"><button class="btn small" data-act="${act}">${label}</button></div></div>` : '');
+const demo = (btns) => (SAMPLES ? `<div class="demo"><b>Rehearsal tools</b><div class="row">${btns.map(([a, l]) => `<button class="btn small" data-act="${a}">${l}</button>`).join('')}</div></div>` : '');
+function progressBoard(kind) {
+  return `<ul class="board">${S.teams.map((t) => {
+    const w = workOf(S, t.id); const saved = kind === 'root' ? w.savedRoot : w.savedSol;
+    const what = kind === 'root' ? w.root : w.title;
+    return `<li><div class="t"><b>${esc(t.name)}</b><div>${esc(what || t.ch?.title || '')}</div></div><span class="code">${saved ? 'Saved ' + esc(saved) : 'Nothing saved yet'}</span></li>`;
+  }).join('')}</ul>`;
+}
 function vFacilitator() {
   if (VIEW === 'projector') return vProjector();
   if (VIEW === 'codes') return vCodes();
   const pi = phaseIdx(S); const n = N();
-  const counts = { sub: S.teams.filter((t) => t.primary).length, pend: S.teams.filter((t) => act(t)?.status === 'pending').length, appr: approvedCount(S) };
   let body = '';
-  if (S.phase === 's5') {
+  if (S.phase === 'submit') {
+    const sub = S.teams.filter((t) => t.ch).length, pend = S.teams.filter((t) => t.ch?.status === 'pending').length;
     body = `<div class="card stack">
-      <div><h2>Session 05 · Challenge submissions</h2><p class="lede">Teams submit a primary challenge and a backup during “Reimagine the Customer Journey”. The panel approves one distinct challenge per team. Lock the list once all ${n} are approved.</p></div>
-      <div class="stats"><div class="stat"><b>${counts.sub}/${n}</b><span>Teams submitted</span></div><div class="stat"><b>${counts.pend}</b><span>Waiting for panel</span></div><div class="stat"><b>${counts.appr}/${n}</b><span>Approved</span></div></div>
-      <ul class="board">${S.teams.map((t) => `<li><div class="t"><b>${esc(t.name)}</b><div>${esc(act(t)?.title || '—')}</div></div>${pill(curStatus(t))}</li>`).join('')}</ul>
-      <div class="row"><button class="btn primary" data-act="lock" ${allApproved(S) ? '' : 'disabled'}>Lock challenges &amp; publish</button>
-      ${allApproved(S) ? '' : `<span class="lede" style="margin:0">Unlocks when all ${n} teams have an approved challenge.</span>`}</div>
-      ${demo('demo-s5', 'Add sample submissions and approve them')}
+      <div><h2>Stage 1 · Challenges</h2><p class="lede">One person from each team enters the team's challenge, then the team explains it to the panel. Either panelist can approve. When all ${n} are approved the challenges lock automatically and appear on the big screen.</p></div>
+      <div class="stats"><div class="stat"><b>${sub}/${n}</b><span>Entered</span></div><div class="stat"><b>${pend}</b><span>Waiting for panel</span></div><div class="stat"><b>${approvedCount(S)}/${n}</b><span>Approved</span></div></div>
+      <ul class="board">${S.teams.map((t) => `<li><div class="t"><b>${esc(t.name)}</b><div>${esc(t.ch?.title || '—')}</div>${t.ch?.by ? `<div class="code">${t.ch.status === 'approved' ? 'Approved' : 'Sent back'} by ${esc(t.ch.by)}</div>` : ''}</div>${pill(curStatus(t))}</li>`).join('')}</ul>
+      ${demo([['demo-submit', 'Enter sample challenges'], ['demo-approve', 'Approve all entered']])}
     </div>`;
   } else if (S.phase === 'locked') {
-    body = `<div class="card stack"><div><h2>Challenges locked</h2><p class="lede">The challenges are published on the projector and copied into each team's proposal canvas. Start the sprint at 16:03.</p></div>
+    body = `<div class="card stack"><div><h2>Challenges locked</h2><p class="lede">All ${n} challenges are confirmed and on the big screen. Start Stage 2 when teams are ready: ${fmt(S.rootT.dur)} for the root cause, then ${fmt(S.solT.dur)} for the solution.</p></div>
       ${lockedList()}
-      <div class="row"><button class="btn primary" data-act="phase" data-id="sprint">Open Session 10 · Ideation sprint</button></div></div>`;
-  } else if (S.phase === 'sprint') {
-    const r = remaining(S.sprint, now()); const filled = S.teams.filter((t) => { const c = canvasOf(S, t.id); return c.approach && c.impl && c.benefits; }).length;
-    body = `<div class="card stack"><div><h2>Ideation sprint</h2><p class="lede">Teams complete Approach, Implementation and Expected Benefits on their canvas. The challenge is already filled in.</p></div>
-      <div class="row between"><div class="timer-sm" data-timer="sprint">${fmt(r)}</div>
-      <div class="row">${S.sprint.start ? `<button class="btn" data-act="t-pause" data-id="sprint">Pause</button>` : `<button class="btn primary" data-act="t-start" data-id="sprint">${S.sprint.acc ? 'Resume' : 'Start ' + fmt(S.sprint.dur)}</button>`}<button class="btn" data-act="t-reset" data-id="sprint">Reset</button></div></div>
-      <div class="stats"><div class="stat"><b>${filled}/${n}</b><span>Canvases complete</span></div></div>
-      <ul class="board">${S.teams.map((t) => { const c = canvasOf(S, t.id); return `<li><div class="t"><b>${esc(t.name)}</b><div>${esc(c.title || 'No pitch title yet')}</div></div><span class="code">${c.saved ? 'Saved ' + esc(c.saved) : 'Not saved'}</span></li>`; }).join('')}</ul>
+      <div class="row"><button class="btn primary" data-act="phase" data-id="root">Start Stage 2 · Root cause</button></div></div>`;
+  } else if (S.phase === 'root') {
+    body = `<div class="card stack"><div><h2>Stage 2 · Root cause</h2><p class="lede">Teams ask “why?” up to five times and name the root cause. Their work saves as they type, and saving stops when the timer runs out.</p></div>
+      ${timerCtl('rootT')}${progressBoard('root')}
+      <div class="row"><button class="btn primary" data-act="phase" data-id="solution">Move to Solution (${fmt(S.solT.dur)})</button></div>
+      ${demo([['demo-root', 'Fill sample root causes']])}</div>`;
+  } else if (S.phase === 'solution') {
+    body = `<div class="card stack"><div><h2>Stage 2 · Solution</h2><p class="lede">Teams design a solution for their root cause. What they write becomes their pitch slide.</p></div>
+      ${timerCtl('solT')}${progressBoard('solution')}
       <div class="row"><button class="btn primary" data-act="phase" data-id="pitch">Start pitches</button></div>
-      ${demo('demo-canvas', 'Fill sample canvases for all teams')}</div>`;
+      ${demo([['demo-solution', 'Fill sample solutions']])}</div>`;
   } else if (S.phase === 'pitch') {
-    const t = S.teams[S.pitchIdx]; const r = remaining(S.pitchT, now());
-    const sc = S.teams.map((tt, i) => `<tr><td>${i + 1}</td><td>${esc(tt.name)}${i === S.pitchIdx ? ' <span class="now-badge">On stage</span>' : ''}</td>${S.judges.map((_, j) => `<td>${S.scores[j]?.[tt.id]?.submitted ? '✓' : '–'}</td>`).join('')}</tr>`).join('');
-    body = `<div class="card stack"><div><h2>Pitches · ${S.pitchIdx + 1} of ${n}</h2><p class="lede">On stage: <b>${esc(t.name)}</b>. Three minutes each. The projector shows their canvas and the countdown.</p></div>
-      <div class="row between"><div class="timer-sm ${r <= 30 ? 'red' : r <= 60 ? 'amber' : ''}" data-timer="pitch">${fmt(r)}</div>
-      <div class="row">${S.pitchT.start ? `<button class="btn" data-act="t-pause" data-id="pitchT">Pause</button>` : `<button class="btn primary" data-act="t-start" data-id="pitchT">${S.pitchT.acc ? 'Resume' : 'Start ' + fmt(S.pitchT.dur)}</button>`}
-      <button class="btn" data-act="prev-team" ${S.pitchIdx ? '' : 'disabled'}>Previous</button>
-      ${S.pitchIdx < n - 1 ? `<button class="btn primary" data-act="next-team">Next team</button>` : `<button class="btn primary" data-act="phase" data-id="results">Go to results</button>`}</div></div>
-      <div class="tbl"><table class="t"><thead><tr><th>#</th><th>Team</th>${S.judges.map((j) => `<th>${esc(j.name)}</th>`).join('')}</tr></thead><tbody>${sc}</tbody></table></div>
-      ${demo('demo-scores', 'Fill sample scores for all but the last judge')}</div>`;
+    const t = S.teams[S.pitchIdx];
+    const sc = S.teams.map((tt, i) => `<tr><td>${i + 1}</td><td>${esc(tt.name)}${i === S.pitchIdx ? ' <span class="now-badge">On stage</span>' : ''}</td>${S.panelists.map((_, j) => `<td>${S.scores[j]?.[tt.id]?.submitted ? '✓' : '–'}</td>`).join('')}</tr>`).join('');
+    body = `<div class="card stack"><div><h2>Pitches · ${S.pitchIdx + 1} of ${n}</h2><p class="lede">On stage: <b>${esc(t.name)}</b>. The big screen shows their challenge, root cause and solution with the countdown.</p></div>
+      ${timerCtl('pitchT')}
+      <div class="row"><button class="btn" data-act="prev-team" ${S.pitchIdx ? '' : 'disabled'}>Previous team</button>
+      ${S.pitchIdx < n - 1 ? `<button class="btn primary" data-act="next-team">Next team</button>` : `<button class="btn primary" data-act="phase" data-id="results">Go to results</button>`}</div>
+      <div class="tbl"><table class="t"><thead><tr><th>#</th><th>Team</th>${S.panelists.map((j) => `<th>${esc(j.name)}</th>`).join('')}</tr></thead><tbody>${sc}</tbody></table></div>
+      ${demo([['demo-scores', 'Fill sample scores for one panelist']])}</div>`;
   } else {
     const res = results(S);
-    const rows = res.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.t.name)}</td><td>${esc(act(r.t)?.title)}</td><td class="n">${r.avg.toFixed(1)}</td><td class="n">${r.n}/${S.judges.length}</td></tr>`).join('');
-    body = `<div class="card stack"><div><h2>Results</h2><p class="lede">Reveal from last place up. Scores are the weighted average of all submitted judges, out of 100.</p></div>
+    const rows = res.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.t.name)}</td><td>${esc(r.t.ch?.title)}</td><td class="n">${r.avg.toFixed(1)}</td><td class="n">${r.n}/${S.panelists.length}</td></tr>`).join('');
+    body = `<div class="card stack"><div><h2>Results</h2><p class="lede">Reveal from last place up. Each score is the average of both panelists' weighted scores, out of 100.</p></div>
       <div class="row"><button class="btn primary" data-act="reveal" ${S.reveal >= n ? 'disabled' : ''}>${S.reveal === 0 ? `Reveal ${ordinal(n)} place` : S.reveal >= n ? 'All revealed' : S.reveal === n - 1 ? 'Reveal the winner' : 'Reveal next'}</button>
-      <button class="btn" data-act="reveal-reset">Hide all</button><button class="btn" data-act="export">Download results (CSV)</button></div>
-      <div class="tbl"><table class="t"><thead><tr><th>Rank</th><th>Team</th><th>Challenge</th><th style="text-align:right">Score</th><th style="text-align:right">Judges</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+      <button class="btn" data-act="reveal-reset">Hide all</button><button class="btn" data-act="export">Download everything (CSV)</button></div>
+      <div class="tbl"><table class="t"><thead><tr><th>Rank</th><th>Team</th><th>Challenge</th><th style="text-align:right">Score</th><th style="text-align:right">Panelists</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
   }
   return `<div class="grid g2">${body}
-    <div class="stack"><div class="card"><h3>Session controls</h3><p class="lede">Moves every screen to the selected stage at once.</p>
-      <div class="stack">${PHASES.map((p, i) => `<button class="btn ${i === pi ? 'primary' : ''} small" style="text-align:left" data-act="phase" data-id="${p.id}" ${(p.id !== 's5' && !S.locked && !(p.id === 'locked' && allApproved(S))) ? 'disabled' : ''}>${i + 1}. ${p.label}</button>`).join('')}</div>
-      ${!S.locked ? '<p class="lede" style="margin:10px 0 0;font-size:13px">Session 10 stages open after the challenges are locked.</p>' : ''}</div>
-      <div class="card stack"><h3>Start over</h3><p class="lede" style="margin:0">Clears every submission, canvas and score. Sign-in codes stay the same.</p>
+    <div class="stack"><div class="card"><h3>Event stages</h3><p class="lede">Moves every screen to the selected stage at once.</p>
+      <div class="stack">${PHASES.map((p, i) => `<button class="btn ${i === pi ? 'primary' : ''} small" style="text-align:left" data-act="phase" data-id="${p.id}" ${(p.id !== 'submit' && !S.locked && !(p.id === 'locked' && allApproved(S))) ? 'disabled' : ''}>${i + 1}. ${p.label}</button>`).join('')}</div>
+      ${!S.locked ? '<p class="lede" style="margin:10px 0 0;font-size:13px">Stage 2 opens once every challenge is approved.</p>' : S.phase !== 'submit' ? '<p class="lede" style="margin:10px 0 0;font-size:13px">Going back to Challenges unlocks them for changes.</p>' : ''}</div>
+      <div class="card stack"><h3>Start over</h3><p class="lede" style="margin:0">Clears every challenge, root cause, solution and score. Sign-in codes stay the same.</p>
       <div><button class="btn bad small" data-act="reset-round">Reset event</button></div></div></div></div>`;
 }
-const ordinal = (n) => n + ((n % 100 >= 11 && n % 100 <= 13) ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th'));
-function lockedList() { return `<ul class="board">${S.teams.map((t) => `<li><div class="t"><b>${esc(t.name)}</b><div>${esc(act(t).title)}</div></div><span class="tag">${esc(act(t).cat)}</span></li>`).join('')}</ul>`; }
+function lockedList() { return `<ul class="board">${S.teams.map((t) => `<li><div class="t"><b>${esc(t.name)}</b><div>${esc(t.ch?.title)}</div></div><span class="tag">${esc(t.ch?.cat)}</span></li>`).join('')}</ul>`; }
 function vCodes() {
-  const row = (who, code, note) => `<li><div class="t"><b>${esc(who)}</b>${note ? `<div class="code">${esc(note)}</div>` : ''}</div><span class="code" style="font-size:15px;color:var(--ink)">${esc(code)}</span></li>`;
-  return `<div class="grid g2"><div class="card"><h2>Sign-in codes</h2><p class="lede">Each device opens <b>${esc(location.origin)}</b> and signs in with its code. One device per team.</p>
-    <ul class="board">${S.teams.map((t) => row(t.name, t.code, 'Team device')).join('')}</ul></div>
+  const link = (c) => `${location.origin}/?code=${encodeURIComponent(c)}`;
+  const row = (who, code, note) => `<li><div class="t"><b>${esc(who)}</b>${note ? `<div class="code">${esc(note)}</div>` : ''}</div><div style="text-align:right"><div class="code" style="font-size:15px;color:var(--ink)">${esc(code)}</div><button class="link" data-act="copy" data-id="${esc(link(code))}">Copy sign-in link</button></div></li>`;
+  return `<div class="grid g2"><div class="card stack"><div><h2>Teams</h2><p class="lede">Each device opens <b>${esc(location.origin)}</b> and signs in with its code, or opens its sign-in link. One device per team, used by the team's representative.</p></div>
+    <ul class="board">${S.teams.map((t) => `<li style="flex-wrap:wrap"><div class="t row" style="flex:1 1 220px">
+      <input type="text" id="name-${t.id}" maxlength="40" value="${esc(t.name)}" aria-label="Team name" style="max-width:220px">
+      <button class="btn small" data-act="rename" data-id="${t.id}">Rename</button></div>
+      <div style="text-align:right"><div class="code" style="font-size:15px;color:var(--ink)">${esc(t.code)}</div><button class="link" data-act="copy" data-id="${esc(link(t.code))}">Copy sign-in link</button></div></li>`).join('')}</ul></div>
     <div class="stack"><div class="card"><h3>Staff</h3><ul class="board">
-      ${row('Facilitator', S.auth.facilitator, 'This device')}${row('Review panel', S.auth.panel, 'Approves challenges')}${row('Projector', S.auth.projector, 'Big screen, read only')}
-      ${S.judges.map((j) => row(j.name, j.code, 'Scores pitches')).join('')}</ul></div></div></div>`;
+      ${row('Facilitator', S.auth.facilitator, 'This device')}${row('Projector', S.auth.projector, 'Big screen, read only')}
+      ${S.panelists.map((j) => row(j.name, j.code, 'Approves challenges and scores pitches')).join('')}</ul></div></div></div>`;
 }
 
 /* ---------- team ---------- */
-function chForm(prefix, c, heading, required) {
+function chForm(c) {
   c = c || {};
-  return `<fieldset><legend>${heading}</legend><div class="fgrid">
-   <label class="f full">Challenge title <em>One line the panel can read at a glance</em><input type="text" id="${prefix}-title" maxlength="160" value="${esc(c.title)}" ${required ? 'required' : ''}></label>
-   <label class="f">Category<select id="${prefix}-cat">${CATS.map((x) => `<option ${c.cat === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
-   <label class="f">Customer journey stage<select id="${prefix}-stage">${STAGES.map((x) => `<option ${c.stage === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
-   <label class="f full">What goes wrong today?<textarea id="${prefix}-problem" maxlength="1200">${esc(c.problem)}</textarea></label>
-   <label class="f">Who does it affect?<input type="text" id="${prefix}-affects" maxlength="160" value="${esc(c.affects)}"></label>
-   <label class="f">Why it matters <em>complaints, delays, lost sales</em><input type="text" id="${prefix}-why" maxlength="1200" value="${esc(c.why)}"></label>
-  </div></fieldset>`;
+  return `<div class="fgrid">
+   <label class="f full">Challenge title <em>One line the panel can read at a glance</em><input type="text" id="p-title" maxlength="160" value="${esc(c.title)}" required></label>
+   <fieldset class="full"><legend>Type of challenge</legend><div class="row">${CATS.map((x, i) => `<label class="radio"><input type="radio" name="p-cat" id="p-cat-${i}" value="${esc(x)}" ${(c.cat || CATS[0]) === x ? 'checked' : ''}> ${esc(x)}</label>`).join('')}</div></fieldset>
+   <label class="f full">What happens today? <em>The problem, in two or three sentences</em><textarea id="p-problem" maxlength="1200" required>${esc(c.problem)}</textarea></label>
+   <label class="f">Who does it affect?<input type="text" id="p-affects" maxlength="160" value="${esc(c.affects)}"></label>
+   <label class="f">Why it matters <em>complaints, delays, cost, lost sales</em><input type="text" id="p-why" maxlength="1200" value="${esc(c.why)}"></label>
+  </div>`;
 }
-function readForm(prefix) {
-  const g = (k) => document.getElementById(prefix + '-' + k)?.value.trim() || '';
-  return { title: g('title'), cat: g('cat'), stage: g('stage'), problem: g('problem'), affects: g('affects'), why: g('why') };
+function readForm() {
+  const g = (k) => document.getElementById('p-' + k)?.value.trim() || '';
+  return { title: g('title'), cat: document.querySelector('input[name="p-cat"]:checked')?.value || CATS[0], problem: g('problem'), affects: g('affects'), why: g('why') };
 }
 function titleBoard(t) {
-  const items = S.teams.filter((o) => o.primary).map((o) => { const a = act(o); return `<li><div class="t"><div>${esc(a.title)}</div><span class="code">${esc(o.name)}${o === t ? ' · you' : ''}</span></div>${pill(a.status === 'standby' ? 'pending' : a.status)}</li>`; }).join('');
-  return `<div class="card"><h3>Challenges already submitted</h3><p class="lede">Titles only. Pick something different to avoid a duplicate. If two teams submit the same challenge, the earlier one keeps it.</p><ul class="board">${items || '<li>No submissions yet.</li>'}</ul></div>`;
+  const items = S.teams.filter((o) => o.ch).map((o) => `<li><div class="t"><div>${esc(o.ch.title)}</div><span class="code">${esc(o.name)}${o === t ? ' · you' : ''}</span></div>${pill(o.ch.status)}</li>`).join('');
+  return `<div class="card"><h3>Challenges entered so far</h3><p class="lede">Pick something different from the other teams.</p><ul class="board">${items || '<li>None yet.</li>'}</ul></div>`;
+}
+function workTimer(key, label) {
+  const up = timeUp(S[key], now());
+  return `<div><div class="eyebrow">${up ? 'Time is up' : label}</div>${timerEl(key)}</div>`;
 }
 function vTeam() {
   const t = team(S, ME.teamId);
   const head = `<div class="card row between"><div><div class="eyebrow">This device is signed in as</div><h3>${esc(t.name)} <span class="code">${esc(t.code || '')}</span></h3></div></div>`;
-  let main = '';
-  if (S.phase === 's5') {
-    const st = teamState(t);
-    if (st === 'new') {
-      main = `<form class="card stack" data-form="submit-new"><div><h2>Submit your challenge</h2><p class="lede">What part of the customer journey should be fixed? It could be a process, a digital gap, a sales problem or anything customers struggle with. Add a backup in case the panel finds a duplicate.</p></div>
-        ${chForm('p', null, 'Primary challenge', true)}${chForm('b', null, 'Backup challenge', false)}
-        <div class="row"><button class="btn primary" type="submit">Submit to panel</button></div></form>`;
-    } else if (st === 'refine') {
-      const a = act(t);
-      main = `<form class="card stack" data-form="resubmit"><div><h2>The panel asked you to refine</h2></div>
-        <div class="note"><b>Panel comment:</b> ${esc(a.note)}</div>
-        ${chForm('p', a, t.active === 'primary' ? 'Primary challenge' : 'Backup challenge', true)}
-        <div class="row"><button class="btn primary" type="submit">Resubmit</button></div></form>`;
-    } else if (st === 'again') {
-      const a = act(t);
-      main = `<form class="card stack" data-form="again"><div><h2>Submit a new challenge</h2></div>
-        <div class="note bad">${a.status === 'duplicate' ? 'Your challenge was marked as a duplicate.' : 'Your challenge was not accepted.'} ${esc(a.note)} You have no backup left, so please submit a new one.</div>
-        ${chForm('p', null, 'New challenge', true)}
-        <div class="row"><button class="btn primary" type="submit">Submit to panel</button></div></form>`;
+  const c = t.ch;
+  if (S.phase === 'submit') {
+    let main;
+    if (!c || c.status === 'refine') {
+      main = `<form class="card stack" data-form="${c ? 'resubmit' : 'submit'}"><div><h2>${c ? 'The panel sent your challenge back' : 'Enter your team\'s challenge'}</h2>
+        <p class="lede">${c ? 'Update it and resubmit, then explain it to the panel again.' : 'It can be an internal process, a customer pain point or a new way to serve customers. Your team can enter only one challenge, so agree on it first.'}</p></div>
+        ${c ? `<div class="note"><b>${esc(c.by || 'Panel')}:</b> ${esc(c.note)}</div>` : ''}
+        ${chForm(c)}
+        <div class="row"><button class="btn primary" type="submit">${c ? 'Resubmit to the panel' : 'Enter challenge'}</button></div></form>`;
     } else {
-      const a = act(t); const used = t.active === 'backup';
-      main = `<div class="card stack"><div class="row between"><h2>Your challenge</h2>${pill(a.status)}</div>
-        ${used && t.primary ? `<div class="note info">Your primary challenge was ${t.primary.status === 'duplicate' ? 'a duplicate' : 'not accepted'}${t.primary.note ? ` (${esc(t.primary.note)})` : ''}. Your backup is now with the panel.</div>` : ''}
-        <h3>${esc(a.title)}</h3>
-        <dl class="kv"><dt>Category</dt><dd>${esc(a.cat)}</dd><dt>Journey stage</dt><dd>${esc(a.stage)}</dd><dt>Today</dt><dd>${esc(a.problem)}</dd><dt>Affects</dt><dd>${esc(a.affects)}</dd><dt>Why it matters</dt><dd>${esc(a.why)}</dd><dt>Submitted</dt><dd>${esc(a.ts)}</dd></dl>
-        ${!used && t.backup ? `<hr class="soft"><div class="row between"><span><span class="eyebrow">Backup</span> ${esc(t.backup.title)}</span>${pill('standby')}</div>` : ''}
-        <p class="lede" style="margin:0">${a.status === 'approved' ? 'Approved. This will be your challenge in Session 10.' : 'The panel will review this shortly. This screen updates on its own.'}</p></div>`;
+      main = `<div class="card stack"><div class="row between"><h2>Your challenge</h2>${pill(c.status)}</div>
+        <h3>${esc(c.title)}</h3><div><span class="tag">${esc(c.cat)}</span></div>${chDetails(c)}
+        ${c.status === 'approved'
+          ? `<div class="note ok"><b>Approved by ${esc(c.by)}.</b> When every team's challenge is approved, they lock and Stage 2 begins.</div>`
+          : '<div class="note info"><b>Next:</b> come up to the panel and explain your challenge. This screen updates as soon as they confirm it.</div>'}</div>`;
     }
     return `${head}<div class="grid g2" style="margin-top:16px">${main}${titleBoard(t)}</div>`;
   }
   if (S.phase === 'locked') {
-    return `${head}<div class="card" style="margin-top:16px"><h2>Your challenge is locked in</h2><p class="lede">See you in Session 10. Your canvas will open with this challenge already filled in.</p><h3>${esc(act(t).title)}</h3></div>`;
+    return `${head}<div class="grid g2" style="margin-top:16px"><div class="card stack"><h2>Your challenge is locked in</h2><h3>${esc(c?.title)}</h3>${c ? chDetails(c) : ''}
+      <p class="lede" style="margin:0">Next is Stage 2. You will have ${fmt(S.rootT.dur)} to find the root cause, then ${fmt(S.solT.dur)} to build the solution.</p></div>
+      <div class="card"><h3>All ${N()} challenges</h3>${lockedList()}</div></div>`;
   }
-  const c = canvasOf(S, t.id); const a = act(t); const ro = S.phase !== 'sprint';
-  return `${head}<form class="card stack" style="margin-top:16px" data-form="canvas">
-    <div class="row between"><div><h2>Proposal canvas</h2><p class="lede">This becomes your slide during the 3-minute pitch. Keep each box short enough to say in under a minute.</p></div>
-    ${S.phase === 'sprint' ? `<div><div class="eyebrow">Sprint time left</div><div class="timer-sm" data-timer="sprint">${fmt(remaining(S.sprint, now()))}</div></div>` : '<span class="pill p-standby">Locked for pitching</span>'}</div>
-    <div class="fgrid">
-      <div class="full note info"><b>Challenge (from Session 05):</b> ${esc(a.title)} <span class="tag">${esc(a.cat)}</span></div>
-      <label class="f full">Pitch title<input type="text" id="c-title" maxlength="160" value="${esc(c.title)}" ${ro ? 'disabled' : ''}></label>
-      <label class="f full">Proposed approach <em>What will you do?</em><textarea id="c-approach" maxlength="1200" ${ro ? 'disabled' : ''}>${esc(c.approach)}</textarea></label>
-      <label class="f full">Implementation <em>Steps, owners, timeline, cost</em><textarea id="c-impl" maxlength="1200" ${ro ? 'disabled' : ''}>${esc(c.impl)}</textarea></label>
-      <label class="f full">Expected benefits <em>For customers and for the bank, with numbers if you have them</em><textarea id="c-benefits" maxlength="1200" ${ro ? 'disabled' : ''}>${esc(c.benefits)}</textarea></label>
-    </div>
-    ${ro ? '' : `<div class="row"><button class="btn primary" type="submit">Save canvas</button><span class="code">${c.saved ? 'Saved ' + esc(c.saved) : 'Not saved yet'}${Object.keys(drafts).some((k) => k.startsWith('c-')) ? ' · unsaved changes' : ''}</span></div>`}
-  </form>`;
+  const w = workOf(S, t.id);
+  const chBox = `<div class="note info"><b>Your challenge:</b> ${esc(c?.title)} <span class="tag">${esc(c?.cat)}</span></div>`;
+  if (S.phase === 'root') {
+    const ro = timeUp(S.rootT, now());
+    return `${head}<form class="card stack" style="margin-top:16px" data-form="root" data-autosave="save-root">
+      <div class="row between"><div><h2>Find the root cause</h2><p class="lede">Start with the problem and keep asking “why does this happen?”. Stop when you reach something you can act on. Your work saves as you type.</p></div>${workTimer('rootT', 'Root cause time left')}</div>
+      ${chBox}
+      <div class="stack">${Array.from({ length: WHYS }, (_, i) => `<label class="f">Why ${i + 1}?<input type="text" id="w-why-${i}" maxlength="1200" value="${esc(w.whys[i])}" ${ro ? 'disabled' : ''} placeholder="${i === 0 ? 'Why does the problem happen?' : 'Why is that?'}"></label>`).join('')}</div>
+      <label class="f">Our root cause <em>One sentence: the real reason behind the problem</em><textarea id="w-root" maxlength="1200" ${ro ? 'disabled' : ''}>${esc(w.root)}</textarea></label>
+      ${saveRow(ro, w.savedRoot, 'w-')}</form>`;
+  }
+  if (S.phase === 'solution') {
+    const ro = timeUp(S.solT, now());
+    return `${head}<form class="card stack" style="margin-top:16px" data-form="solution" data-autosave="save-solution">
+      <div class="row between"><div><h2>Build your solution</h2><p class="lede">Solve the root cause, not just the symptom. This becomes your slide on the big screen when you pitch.</p></div>${workTimer('solT', 'Solution time left')}</div>
+      ${chBox}<div class="note"><b>Root cause:</b> ${esc(w.root || 'Not filled in')}</div>
+      <div class="fgrid">
+        <label class="f full">Solution name<input type="text" id="s-title" maxlength="160" value="${esc(w.title)}" ${ro ? 'disabled' : ''}></label>
+        <label class="f full">What will you do? <em>The idea, in plain words</em><textarea id="s-approach" maxlength="1200" ${ro ? 'disabled' : ''}>${esc(w.approach)}</textarea></label>
+        <label class="f full">How will it work? <em>Steps, owners, timeline, what you need</em><textarea id="s-impl" maxlength="1200" ${ro ? 'disabled' : ''}>${esc(w.impl)}</textarea></label>
+        <label class="f full">Expected impact <em>For customers and for the bank, with numbers if you have them</em><textarea id="s-benefits" maxlength="1200" ${ro ? 'disabled' : ''}>${esc(w.benefits)}</textarea></label>
+      </div>
+      ${saveRow(ro, w.savedSol, 's-')}</form>`;
+  }
+  const onStage = S.phase === 'pitch' && S.teams[S.pitchIdx]?.id === t.id;
+  return `${head}<div class="card stack" style="margin-top:16px"><div class="row between"><h2>Your pitch</h2>${onStage ? '<span class="now-badge">You are on stage</span>' : '<span class="pill p-none">Locked</span>'}</div>
+    ${summary(t, w)}</div>`;
+}
+function saveRow(ro, saved, prefix) {
+  if (ro) return `<div class="note bad">Time is up. Your work was saved${saved ? ' at ' + esc(saved) : ''}.</div>`;
+  const dirty = Object.keys(drafts).some((k) => k.startsWith(prefix));
+  return `<div class="row"><button class="btn primary" type="submit">Save now</button><span class="code" id="save-state">${dirty ? 'Saving…' : saved ? 'All changes saved · ' + esc(saved) : 'Not saved yet'}</span></div>`;
+}
+function summary(t, w) {
+  const c = t.ch || {};
+  return `<dl class="kv"><dt>Challenge</dt><dd><b>${esc(c.title)}</b> <span class="tag">${esc(c.cat)}</span><br>${esc(c.problem)}</dd>
+    <dt>Five whys</dt><dd><ol class="whys">${lines(w.whys) || '<li>—</li>'}</ol></dd>
+    <dt>Root cause</dt><dd>${esc(w.root || '—')}</dd>
+    <dt>Solution</dt><dd><b>${esc(w.title || '—')}</b><br>${esc(w.approach)}</dd>
+    <dt>How it works</dt><dd>${esc(w.impl || '—')}</dd><dt>Expected impact</dt><dd>${esc(w.benefits || '—')}</dd></dl>`;
 }
 
-/* ---------- panel ---------- */
-function vPanel() {
-  const order = { pending: 0, refine: 1, none: 2, approved: 3 };
-  const list = [...S.teams].sort((a, b) => (order[curStatus(a)] ?? 2) - (order[curStatus(b)] ?? 2));
-  const editable = S.phase === 's5'; const n = N();
-  const cards = list.map((t) => {
-    const st = teamState(t);
-    if (st === 'new') return `<div class="qcard is-none"><div class="row between"><h3>${esc(t.name)}</h3>${pill('none')}</div><p class="lede" style="margin:0">Nothing submitted yet.</p></div>`;
-    const a = act(t); const sim = a.status === 'pending' ? similarTo(S, t) : null;
-    return `<div class="qcard is-${a.status === 'approved' ? 'approved' : a.status === 'refine' ? 'refine' : a.status === 'pending' ? 'pending' : 'none'}">
-      <div class="row between"><div><span class="eyebrow">${esc(t.name)} · ${t.active === 'backup' ? 'backup' : 'primary'} · ${esc(a.ts)}</span><h3>${esc(a.title)}</h3></div>${pill(a.status)}</div>
-      <div class="row"><span class="tag">${esc(a.cat)}</span><span class="tag">${esc(a.stage)}</span></div>
-      <dl class="kv"><dt>Today</dt><dd>${esc(a.problem)}</dd><dt>Affects</dt><dd>${esc(a.affects)}</dd><dt>Why it matters</dt><dd>${esc(a.why)}</dd></dl>
-      ${sim ? `<div class="note bad"><b>Possible duplicate</b> of ${esc(sim.team.name)}: “${esc(act(sim.team).title)}”</div>` : ''}
-      ${a.status === 'refine' ? `<div class="note">Waiting for the team to refine: ${esc(a.note)}</div>` : ''}
-      ${editable && a.status === 'pending' ? `
-        <div class="row"><button class="btn ok small" data-act="approve" data-id="${t.id}">Approve</button>
-        <select id="dup-${t.id}" aria-label="Duplicate of" style="width:auto">${S.teams.filter((o) => o !== t && act(o)).map((o) => `<option value="${o.id}" ${sim && sim.team === o ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}</select>
-        <button class="btn bad small" data-act="dup" data-id="${t.id}">Mark duplicate</button></div>
-        <label class="f">Comment to the team <em>needed to send back or reject</em><input type="text" id="note-${t.id}" maxlength="300" placeholder="e.g. Narrow it to one product or one lounge process"></label>
-        <div class="row"><button class="btn warn small" data-act="refine" data-id="${t.id}">Send back to refine</button><button class="btn bad small" data-act="reject" data-id="${t.id}">Reject</button></div>` : ''}
-      ${editable && a.status === 'approved' ? `<div><button class="link" data-act="undo" data-id="${t.id}">Undo approval</button></div>` : ''}
-    </div>`;
-  }).join('');
-  return `<div class="grid g2"><div class="stack"><div class="card"><h2>Review queue</h2><p class="lede">Approve one distinct challenge per team. Marking a duplicate or rejecting moves the team to its backup automatically.</p>
-    <div class="stats"><div class="stat"><b>${approvedCount(S)}/${n}</b><span>Approved</span></div><div class="stat"><b>${S.teams.filter((t) => act(t)?.status === 'pending').length}</b><span>To review</span></div></div>
-    ${!editable ? '<p class="note info" style="margin-top:12px">Challenges are locked. The queue is read-only.</p>' : ''}</div>${cards}</div>
-    <div class="stack"><div class="card"><h3>What makes a good challenge</h3><ul style="margin:0;padding-left:18px;color:var(--muted)">
-      <li>A real customer or staff pain point seen in the lounges or on digital channels</li><li>Specific enough to solve in a 3-minute proposal</li><li>Can be improved by the retail team, not only by IT or policy change</li><li>Different from every other approved challenge</li></ul></div>
-      <div class="card"><h3>Approved so far</h3><ul class="board">${S.teams.filter((t) => act(t)?.status === 'approved').map((t) => `<li><div class="t">${esc(act(t).title)}<div class="code">${esc(t.name)}</div></div></li>`).join('') || '<li>None yet.</li>'}</ul></div></div></div>`;
-}
-
-/* ---------- judge ---------- */
-function vJudge() {
-  const j = ME.judge;
-  const head = `<div class="card row between"><div><div class="eyebrow">Scoring as</div><h3>${esc(S.judges[j].name)}</h3></div></div>`;
+/* ---------- panelist ---------- */
+function vPanelist() {
+  const me = S.panelists[ME.p]; const n = N();
+  const head = `<div class="card row between"><div><div class="eyebrow">Signed in as</div><h3>${esc(me.name)}</h3></div><div class="stats"><div class="stat"><b>${approvedCount(S)}/${n}</b><span>Approved</span></div></div></div>`;
+  if (S.phase === 'submit') {
+    const order = { pending: 0, refine: 1, none: 2, approved: 3 };
+    const list = [...S.teams].sort((a, b) => (order[curStatus(a)] ?? 2) - (order[curStatus(b)] ?? 2));
+    const cards = list.map((t) => {
+      const c = t.ch;
+      if (!c) return `<div class="qcard is-none"><div class="row between"><h3>${esc(t.name)}</h3>${pill('none')}</div><p class="lede" style="margin:0">Nothing entered yet.</p></div>`;
+      return `<div class="qcard is-${c.status}">
+        <div class="row between"><div><span class="eyebrow">${esc(t.name)} · ${esc(c.ts)}</span><h3>${esc(c.title)}</h3></div>${pill(c.status)}</div>
+        <div><span class="tag">${esc(c.cat)}</span></div>${chDetails(c)}
+        ${c.status === 'refine' ? `<div class="note">Sent back by ${esc(c.by)}: ${esc(c.note)}</div>` : ''}
+        ${c.status === 'pending' ? `
+          <div class="row"><button class="btn ok" data-act="approve" data-id="${t.id}">Approve challenge</button></div>
+          <label class="f">Or send it back <em>tell the team what to change</em><input type="text" id="note-${t.id}" maxlength="300" placeholder="e.g. Too broad. Focus on one product or one process."></label>
+          <div class="row"><button class="btn warn small" data-act="refine" data-id="${t.id}">Send back to the team</button></div>` : ''}
+        ${c.status === 'approved' ? `<div class="row between"><span class="code">Approved by ${esc(c.by)}</span><button class="link" data-act="undo" data-id="${t.id}">Undo approval</button></div>` : ''}
+      </div>`;
+    }).join('');
+    return `${head}<div class="grid g2" style="margin-top:16px"><div class="stack">${cards}</div>
+      <div class="stack"><div class="card"><h3>How approval works</h3><ul class="plain">
+        <li>Each team enters one challenge, then explains it to you.</li><li>Either panelist can approve. One approval is enough.</li>
+        <li>When all ${n} are approved, the challenges lock and show on the big screen.</li></ul></div>
+        <div class="card"><h3>A good challenge is</h3><ul class="plain"><li>A real problem for customers or staff</li><li>Specific enough to solve in 20 minutes</li><li>Something the team can influence</li><li>Different from the other teams' challenges</li></ul></div></div></div>`;
+  }
   if (!['pitch', 'results'].includes(S.phase)) {
-    return head + `<div class="card" style="margin-top:16px"><h2>Scoring opens when pitches start</h2><p class="lede">You will score each team on five criteria from 1 to 5 as they present.</p>
-    <div class="tbl"><table class="t"><thead><tr><th>Criterion</th><th style="text-align:right">Weight</th></tr></thead><tbody>${CRIT.map((c) => `<tr><td>${c.k}</td><td class="n">${c.w}%</td></tr>`).join('')}</tbody></table></div></div>`;
+    const cards = S.teams.map((t) => { const w = workOf(S, t.id); return `<div class="card stack"><div><span class="eyebrow">${esc(t.name)}</span><h3>${esc(t.ch?.title)}</h3></div>
+      <dl class="kv"><dt>Root cause</dt><dd>${esc(w.root || '—')}</dd><dt>Solution</dt><dd>${esc(w.title || '—')}</dd></dl></div>`; }).join('');
+    return `${head}<div class="grid g2" style="margin-top:16px"><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr))">${cards}</div>
+      <div class="card"><h3>Scoring opens at the pitches</h3><p class="lede">You will score each team from 1 to 5 on five criteria. The best challenge and solution wins.</p>
+      <div class="tbl"><table class="t"><thead><tr><th>Criterion</th><th style="text-align:right">Weight</th></tr></thead><tbody>${CRIT.map((x) => `<tr><td>${x.k}</td><td class="n">${x.w}%</td></tr>`).join('')}</tbody></table></div></div></div>`;
   }
-  const mine = S.scores[j] || {};
+  const mine = S.scores[ME.p] || {};
   const cards = S.teams.map((t, i) => {
-    const s = mine[t.id] || { c: [0, 0, 0, 0, 0], submitted: false };
+    const s = mine[t.id] || { c: CRIT.map(() => 0), submitted: false }; const w = workOf(S, t.id);
     const done = s.c.every((v) => v > 0); const onStage = S.phase === 'pitch' && i === S.pitchIdx;
     return `<div class="card stack" ${onStage ? 'style="border-color:var(--accent)"' : ''}>
-      <div class="row between"><div><span class="eyebrow">Pitch ${i + 1} · ${esc(t.name)}</span><h3>${esc(canvasOf(S, t.id).title || act(t)?.title)}</h3></div>
+      <div class="row between"><div><span class="eyebrow">Pitch ${i + 1} · ${esc(t.name)}</span><h3>${esc(w.title || t.ch?.title)}</h3></div>
       ${onStage ? '<span class="now-badge">On stage</span>' : s.submitted ? '<span class="pill p-approved">Submitted</span>' : ''}</div>
-      <div class="crit">${CRIT.map((c, ci) => `<span>${c.k} <span class="code">${c.w}%</span></span><div class="dots">${[1, 2, 3, 4, 5].map((v) => `<button data-act="score" data-team="${t.id}" data-c="${ci}" data-v="${v}" aria-pressed="${s.c[ci] === v}" ${s.submitted ? 'disabled' : ''} aria-label="${c.k} ${v}">${v}</button>`).join('')}</div>`).join('')}</div>
+      <details id="det-${t.id}"><summary>Challenge, root cause and solution</summary>${summary(t, w)}</details>
+      <div class="crit">${CRIT.map((x, ci) => `<span>${x.k} <span class="code">${x.w}%</span></span><div class="dots">${[1, 2, 3, 4, 5].map((v) => `<button data-act="score" data-team="${t.id}" data-c="${ci}" data-v="${v}" aria-pressed="${s.c[ci] === v}" ${s.submitted ? 'disabled' : ''} aria-label="${x.k} ${v}">${v}</button>`).join('')}</div>`).join('')}</div>
       <div class="row between"><span class="code">Score: ${done ? judgeTotal(s.c).toFixed(0) + ' / 100' : '—'}</span>
       ${s.submitted ? '<span class="code">Locked</span>' : `<button class="btn primary small" data-act="submit-score" data-team="${t.id}" ${done ? '' : 'disabled'}>Submit score</button>`}</div></div>`;
   }).join('');
@@ -299,35 +338,36 @@ function vJudge() {
 function vProjector() {
   let inner = ''; const n = N();
   const fs = ME.role === 'projector' ? `<button class="btn small" data-act="fullscreen">Full screen</button>` : '';
-  if (S.phase === 's5') {
-    inner = `<div class="row between"><div><div class="eyebrow">Session 05 · Reimagine the Customer Journey</div><h2>Challenge submissions</h2></div>${fs}</div>
-     <div class="ptiles">${S.teams.map((t) => { const st = curStatus(t); const a = act(t);
-      return `<div class="ptile ${st === 'approved' ? 'ok' : ''}"><span class="tm">${esc(t.name)}</span><span class="ch ${a && st !== 'none' ? '' : 'empty'}">${a && st !== 'none' ? esc(a.title) : 'Waiting for submission'}</span><span class="st">${statusLabel[st]}</span></div>`; }).join('')}</div>
+  const top = (eyebrow, h) => `<div class="row between"><div><div class="eyebrow">${eyebrow}</div><h2>${h}</h2></div>${fs}</div>`;
+  if (S.phase === 'submit') {
+    inner = `${top('Stage 1', 'Team challenges')}
+     <div class="ptiles">${S.teams.map((t) => { const st = curStatus(t);
+      return `<div class="ptile ${st === 'approved' ? 'ok' : ''}"><span class="tm">${esc(t.name)}</span><span class="ch ${t.ch ? '' : 'empty'}">${t.ch ? esc(t.ch.title) : 'Waiting for the challenge'}</span><span class="st">${t.ch ? esc(t.ch.cat) + ' · ' : ''}${st === 'approved' ? '✓ Approved' : statusLabel[st]}</span></div>`; }).join('')}</div>
      <div class="eyebrow">${approvedCount(S)} of ${n} approved</div>`;
   } else if (S.phase === 'locked') {
-    inner = `<div class="row between"><div><div class="eyebrow">Locked for Session 10</div><h2>This afternoon's ${n} challenges</h2></div>${fs}</div>
-     <div class="ptiles">${S.teams.map((t) => `<div class="ptile ok"><span class="tm">${esc(t.name)}</span><span class="ch">${esc(act(t).title)}</span><span class="st">${esc(act(t).cat)}</span></div>`).join('')}</div>`;
-  } else if (S.phase === 'sprint') {
-    const r = remaining(S.sprint, now());
-    inner = `<div class="row between"><div><div class="eyebrow">Session 10 · Ideation sprint</div><h2>Build your proposal</h2></div>${fs}</div>
-     <div class="bigtimer ${r === 0 ? 'done' : r <= 60 ? 'red' : r <= 300 ? 'amber' : ''}" data-timer="sprint" data-big="1">${fmt(r)}</div>
-     <div class="ptiles">${S.teams.map((t) => `<div class="ptile"><span class="tm">${esc(t.name)}</span><span class="ch" style="font-size:19px">${esc(act(t).title)}</span></div>`).join('')}</div>`;
+    inner = `${top('Stage 1 complete', `🔒 All ${n} challenges locked`)}
+     <div class="ptiles">${S.teams.map((t) => `<div class="ptile ok"><span class="tm">${esc(t.name)}</span><span class="ch">${esc(t.ch?.title)}</span><span class="st">${esc(t.ch?.cat)}</span></div>`).join('')}</div>`;
+  } else if (S.phase === 'root' || S.phase === 'solution') {
+    const isRoot = S.phase === 'root'; const key = isRoot ? 'rootT' : 'solT';
+    inner = `${top('Stage 2', isRoot ? 'Find the root cause' : 'Build the solution')}
+     ${timerEl(key, true)}
+     <div class="ptiles">${S.teams.map((t) => { const w = S.work[t.id] || {}; const done = isRoot ? w.hasRoot || w.root : w.hasSolution || (w.title && w.approach);
+      return `<div class="ptile ${done ? 'ok' : ''}"><span class="tm">${esc(t.name)}</span><span class="ch" style="font-size:19px">${esc(t.ch?.title)}</span><span class="st">${done ? (isRoot ? '✓ Root cause identified' : '✓ Solution drafted') : 'Working…'}</span></div>`; }).join('')}</div>`;
   } else if (S.phase === 'pitch') {
-    const t = S.teams[S.pitchIdx]; const c = canvasOf(S, t.id); const r = remaining(S.pitchT, now());
+    const t = S.teams[S.pitchIdx]; const w = workOf(S, t.id); const c = t.ch || {};
     const box = (h, v) => `<div class="pbox"><h4>${h}</h4><p>${v ? esc(v) : '<span style="opacity:.5">Not filled in</span>'}</p></div>`;
     inner = `<div class="row between"><div class="eyebrow">Pitch ${S.pitchIdx + 1} of ${n} · ${esc(t.name)}</div>${fs}</div>
-     <div class="pitch"><div class="stack"><h2>${esc(c.title || act(t).title)}</h2>
-       ${box('Challenge', act(t).title)}${box('Proposed approach', c.approach)}${box('Implementation', c.impl)}${box('Expected benefits', c.benefits)}</div>
-       <div class="stack"><div class="eyebrow">Time remaining</div><div class="bigtimer ${r === 0 ? 'done' : r <= 30 ? 'red' : r <= 60 ? 'amber' : ''}" data-timer="pitch" data-big="1">${fmt(r)}</div></div></div>`;
+     <div class="pitch"><div class="stack"><h2>${esc(w.title || c.title)}</h2>
+       ${box('Challenge · ' + esc(c.cat), [c.title, c.problem].filter(Boolean).join(' — '))}${box('Root cause', w.root)}${box('Solution', w.approach)}${box('How it works', w.impl)}${box('Expected impact', w.benefits)}</div>
+       <div class="stack"><div class="eyebrow">Time remaining</div>${timerEl('pitchT', true)}</div></div>`;
   } else {
-    const res = results(S);
-    const catBest = (i) => res.slice().sort((a, b) => b.critAvg[i] - a.critAvg[i])[0];
-    inner = `<div class="row between"><div><div class="eyebrow">Session 10 · Results</div><h2>${esc(S.event.title)}</h2></div>${fs}</div>
+    const res = results(S); const all = S.reveal >= n; const win = res[0];
+    inner = `${top('Results', esc(S.event.title))}
+     ${all && win?.n ? `<div class="winner"><div class="eyebrow">🏆 Best challenge &amp; solution</div><div class="wn">${esc(win.t.name)}</div><div class="ws">${esc(workOf(S, win.t.id).title || win.t.ch?.title)}</div></div>` : ''}
      <ol class="lb">${res.map((r, i) => { const shown = i >= n - S.reveal; return `<li class="${shown && i === 0 ? 'first' : ''} ${shown ? '' : 'hid'}"><span class="rk">${i + 1}</span>
-      <div><div class="nm">${shown ? esc(r.t.name) : '· · ·'}</div><div class="sub">${shown ? esc(canvasOf(S, r.t.id).title || act(r.t).title) : ''}</div></div><span class="sc">${shown ? r.avg.toFixed(1) : ''}</span></li>`; }).join('')}</ol>
-     ${S.reveal >= n && res[0]?.n ? `<div class="ptiles"><div class="ptile"><span class="tm">Most practical</span><span class="ch">${esc(catBest(0).t.name)}</span></div><div class="ptile"><span class="tm">Best customer impact</span><span class="ch">${esc(catBest(1).t.name)}</span></div><div class="ptile"><span class="tm">Most innovative</span><span class="ch">${esc(catBest(3).t.name)}</span></div></div>` : ''}`;
+      <div><div class="nm">${shown ? esc(r.t.name) : '· · ·'}</div><div class="sub">${shown ? esc(workOf(S, r.t.id).title || r.t.ch?.title) : ''}</div></div><span class="sc">${shown ? r.avg.toFixed(1) : ''}</span></li>`; }).join('')}</ol>`;
   }
-  return `<div class="proj">${inner}</div>`;
+  return `<div class="proj">${inner}<div class="brand">${esc(S.event.eyebrow)}</div></div>`;
 }
 
 /* ---------- render (keeps unsaved input and focus across live updates) ---------- */
@@ -336,57 +376,98 @@ function render() {
   try { if (fid && 'selectionStart' in f) sel = [f.selectionStart, f.selectionEnd]; } catch {}
   renderChrome();
   if (!S) { $('#app').innerHTML = vLogin(); $('#login-code')?.focus(); return; }
-  const v = { facilitator: vFacilitator, team: vTeam, panel: vPanel, judge: vJudge, projector: vProjector }[ME.role];
+  const v = { facilitator: vFacilitator, team: vTeam, panelist: vPanelist, projector: vProjector }[ME.role];
+  const open = [...document.querySelectorAll('details[open]')].map((d) => d.id);
   $('#app').innerHTML = v();
-  for (const [id, val] of Object.entries(drafts)) { const el = document.getElementById(id); if (el && !el.disabled) el.value = val; }
+  for (const [id, val] of Object.entries(drafts)) {
+    const el = document.getElementById(id); if (!el || el.disabled) continue;
+    if (el.type === 'radio') el.checked = val === true; else el.value = val;
+  }
   if (fid) { const el = document.getElementById(fid); if (el) { el.focus({ preventScroll: true }); if (sel) try { el.setSelectionRange(...sel); } catch {} } }
+  open.forEach((id) => { const d = id && document.getElementById(id); if (d) d.open = true; });
 }
+let LAST_UP = null;
 function tick() {
   if (!S) return;
   document.querySelectorAll('[data-timer]').forEach((el) => {
-    const x = el.dataset.timer === 'sprint' ? S.sprint : S.pitchT; const r = remaining(x, now());
+    const key = el.dataset.timer; const r = remaining(S[key], now());
     el.textContent = fmt(r);
     el.classList.remove('amber', 'red', 'done');
-    const isP = el.dataset.timer === 'pitch';
-    if (el.dataset.big && r === 0) el.classList.add('done');
-    else if (r <= (isP ? 30 : 60)) el.classList.add('red');
-    else if (r <= (isP ? 60 : 300)) el.classList.add('amber');
+    const cls = timerClass(key, r, !!el.dataset.big); if (cls) el.classList.add(cls);
   });
+  // Teams: when time runs out, push any unsaved typing and lock the form.
+  if (ME?.role === 'team' && TIMER_OF[S.phase] && S.phase !== 'pitch') {
+    const up = timeUp(S[TIMER_OF[S.phase]], now());
+    if (up !== LAST_UP) { const was = LAST_UP; LAST_UP = up; if (up && was === false) flushSave().then(render); else if (was !== null) render(); }
+  } else LAST_UP = null;
 }
 setInterval(tick, 250);
+
+/* ---------- autosave (root cause & solution) ---------- */
+let saveTimer = null; let saving = null;
+function readWork(kind) {
+  const g = (id) => document.getElementById(id)?.value ?? '';
+  if (kind === 'save-root') return { whys: Array.from({ length: WHYS }, (_, i) => g('w-why-' + i)), root: g('w-root') };
+  return { title: g('s-title'), approach: g('s-approach'), impl: g('s-impl'), benefits: g('s-benefits') };
+}
+async function flushSave(quiet = true) {
+  clearTimeout(saveTimer); saveTimer = null;
+  const form = document.querySelector('form[data-autosave]'); if (!form) return;
+  const kind = form.dataset.autosave; const prefix = kind === 'save-root' ? 'w-' : 's-';
+  if (quiet && !Object.keys(drafts).some((k) => k.startsWith(prefix))) return;
+  const snap = Object.fromEntries(Object.entries(drafts).filter(([k]) => k.startsWith(prefix)));
+  const w = readWork(kind);
+  await saving;
+  saving = send({ type: kind, w, quiet }, { quiet });
+  const ok = await saving; saving = null;
+  if (ok) { for (const [k, v] of Object.entries(snap)) if (drafts[k] === v) delete drafts[k]; render(); }
+}
+function scheduleSave() {
+  clearTimeout(saveTimer); saveTimer = setTimeout(() => flushSave(true), 1200);
+  const el = document.getElementById('save-state'); if (el) el.textContent = 'Saving…';
+}
 
 /* ---------- export ---------- */
 function exportCSV() {
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const lines = [['Rank', 'Team', 'Challenge', 'Category', 'Journey stage', 'Pitch title', 'Approach', 'Implementation', 'Benefits', 'Score', 'Judges', ...CRIT.map((c) => c.k + ' (avg)')].map(q).join(',')];
-  results(S).forEach((r, i) => { const a = act(r.t) || {}; const c = canvasOf(S, r.t.id);
-    lines.push([i + 1, r.t.name, a.title, a.cat, a.stage, c.title, c.approach, c.impl, c.benefits, r.avg.toFixed(1), r.n, ...r.critAvg.map((x) => x.toFixed(2))].map(q).join(',')); });
-  lines.push('', q('Other submitted challenges (not used)'), ['Team', 'Challenge', 'Category', 'Status', 'Panel note'].map(q).join(','));
-  S.teams.forEach((t) => ['primary', 'backup'].forEach((k) => { const c = t[k]; if (c && c !== act(t)) lines.push([t.name, c.title, c.cat, statusLabel[c.status], c.note].map(q).join(',')); }));
-  S.history.forEach((h) => lines.push([h.team, h.c.title, h.c.cat, statusLabel[h.c.status], h.c.note].map(q).join(',')));
-  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'innovation-challenge-results.csv';
+  const head = ['Rank', 'Team', 'Type', 'Challenge', 'What happens today', 'Affects', 'Why it matters', 'Approved by',
+    ...Array.from({ length: WHYS }, (_, i) => 'Why ' + (i + 1)), 'Root cause', 'Solution', 'What we will do', 'How it works', 'Expected impact',
+    'Score /100', 'Panelists scored', ...CRIT.map((c) => c.k + ' (avg)')];
+  const out = [head.map(q).join(',')];
+  results(S).forEach((r, i) => { const c = r.t.ch || {}; const w = workOf(S, r.t.id);
+    out.push([i + 1, r.t.name, c.cat, c.title, c.problem, c.affects, c.why, c.by, ...w.whys, w.root, w.title, w.approach, w.impl, w.benefits,
+      r.avg.toFixed(1), r.n, ...r.critAvg.map((x) => x.toFixed(2))].map(q).join(',')); });
+  const blob = new Blob(['﻿' + out.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'innovation-challenge-2026.csv';
   document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 /* ---------- events ---------- */
 const clearDrafts = (prefix) => Object.keys(drafts).forEach((k) => { if (k.startsWith(prefix)) delete drafts[k]; });
-document.addEventListener('input', (e) => { if (e.target.id && e.target.id !== 'login-code' && e.target.matches('input,textarea,select')) drafts[e.target.id] = e.target.value; });
-document.addEventListener('change', (e) => { if (e.target.id && e.target.matches('select')) drafts[e.target.id] = e.target.value; });
+document.addEventListener('input', (e) => {
+  const el = e.target;
+  if (!el.id || el.id === 'login-code' || !el.matches('input,textarea,select')) return;
+  if (el.type === 'radio') { document.querySelectorAll(`input[name="${el.name}"]`).forEach((r) => (drafts[r.id] = r.checked)); return; }
+  drafts[el.id] = el.value;
+  if (el.closest('form[data-autosave]')) scheduleSave();
+});
 
 document.addEventListener('click', async (e) => {
   const b = e.target.closest('[data-act]'); if (!b || b.disabled) return;
   const a = b.dataset.act, id = b.dataset.id;
-  const note = () => document.getElementById('note-' + id)?.value.trim() || '';
   switch (a) {
     case 'signout': if (confirm('Sign this device out?')) signOut(); return;
     case 'view': VIEW = id; render(); return;
     case 'export': exportCSV(); return;
     case 'fullscreen': document.documentElement.requestFullscreen?.().catch(() => {}); return;
-    case 'reset-round': if (!confirm('Reset the whole event? This clears every submission, canvas and score on every device.')) return; break;
-    case 'demo-s5': case 'demo-canvas': case 'demo-scores': if (!confirm('Add rehearsal sample data to the live event?')) return; break;
-    case 'dup': if (await send({ type: 'dup', id, of: document.getElementById('dup-' + id)?.value })) { clearDrafts('note-' + id); clearDrafts('dup-' + id); render(); } return;
-    case 'refine': case 'reject': if (await send({ type: a, id, note: note() })) { clearDrafts('note-' + id); render(); } return;
+    case 'copy': navigator.clipboard?.writeText(id).then(() => toast('Sign-in link copied.'), () => prompt('Copy this link:', id)); return;
+    case 'reset-round': if (!confirm('Reset the whole event? This clears every challenge, root cause, solution and score on every device.')) return; break;
+    case 'demo-submit': case 'demo-approve': case 'demo-root': case 'demo-solution': case 'demo-scores': if (!confirm('Add rehearsal sample data to the live event?')) return; break;
+    case 'phase':
+      if (id === 'submit' && S.locked && !confirm('Go back to Stage 1? This unlocks the challenges so the panel can change them.')) return;
+      break;
+    case 'rename': { const name = document.getElementById('name-' + id)?.value || ''; if (await send({ type: 'rename', id, name })) { clearDrafts('name-' + id); render(); } return; }
+    case 'refine': { const note = document.getElementById('note-' + id)?.value.trim() || ''; if (await send({ type: a, id, note })) { clearDrafts('note-' + id); render(); } return; }
     case 'score': case 'submit-score': send({ type: a, team: b.dataset.team, c: b.dataset.c, v: b.dataset.v }); return;
   }
   send({ type: a, id });
@@ -394,23 +475,21 @@ document.addEventListener('click', async (e) => {
 
 document.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const f = e.target.dataset.form;
+  const form = e.target; const f = form.dataset.form;
   if (f === 'login') return signIn($('#login-code').value);
-  if (f === 'canvas') {
-    const g = (k) => document.getElementById('c-' + k).value;
-    if (await send({ type: 'canvas', c: { title: g('title'), approach: g('approach'), impl: g('impl'), benefits: g('benefits') } })) { clearDrafts('c-'); render(); }
-    return;
-  }
-  const p = readForm('p'); if (!p.title) return toast('Add a challenge title.');
-  const ok = await send(f === 'submit-new' ? { type: f, p, b: readForm('b') } : { type: f, p });
-  if (ok) { clearDrafts('p-'); clearDrafts('b-'); render(); }
+  if (form.dataset.autosave) return flushSave(false);
+  const p = readForm();
+  if (!p.title) return toast('Add a challenge title.');
+  if (!p.problem) return toast('Describe what happens today.');
+  if (f === 'submit' && !confirm('Enter this as your team\'s challenge? Each team can enter only one.')) return;
+  if (await send({ type: f, p })) { clearDrafts('p-'); render(); }
 });
 
-// Save the canvas with Ctrl/Cmd+S during the sprint.
+// Ctrl/Cmd+S saves straight away.
 document.addEventListener('keydown', (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 's') { const form = document.querySelector('form[data-form="canvas"]'); if (form) { e.preventDefault(); form.requestSubmit(); } }
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') { const form = document.querySelector('form[data-autosave]'); if (form) { e.preventDefault(); flushSave(false); } }
 });
-window.addEventListener('beforeunload', (e) => { if (Object.keys(drafts).some((k) => /^(c|p|b)-/.test(k))) { e.preventDefault(); e.returnValue = ''; } });
+window.addEventListener('beforeunload', (e) => { if (Object.keys(drafts).some((k) => /^(w|s|p)-/.test(k))) { e.preventDefault(); e.returnValue = ''; } });
 
 /* ---------- boot ---------- */
 const params = new URLSearchParams(location.search);

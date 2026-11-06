@@ -18,7 +18,7 @@ test('api: login, polling with version, actions, env codes', async () => {
   const v = j.version; const teamCode = j.state.teams[0].code;
   [st] = await handle({ method: 'GET', route: 'state', query: { code: 'FAC-TEST', v: String(v) } });
   assert.equal(st, 204);
-  [st, j] = await handle({ method: 'POST', route: 'action', headers: { 'x-code': teamCode }, body: { type: 'submit-new', p: { title: 'Hello' } } });
+  [st, j] = await handle({ method: 'POST', route: 'action', headers: { 'x-code': teamCode }, body: { type: 'submit', p: { title: 'Hello', problem: 'World' } } });
   assert.equal(st, 200); assert.equal(j.version, v + 1); assert.equal(j.state.auth, undefined);
   [st, j] = await handle({ method: 'POST', route: 'action', headers: { 'x-code': teamCode }, body: { type: 'reveal' } });
   assert.equal(st, 400);
@@ -27,5 +27,5 @@ test('api: login, polling with version, actions, env codes', async () => {
   // survives a restart
   const again = createApi({ store: fileStore(fs, path.join(dir, 'state.json')), config, env: {} });
   [st, j] = await again({ method: 'GET', route: 'state', query: { code: teamCode } });
-  assert.equal(j.state.teams[0].primary.title, 'Hello');
+  assert.equal(j.state.teams[0].ch.title, 'Hello');
 });

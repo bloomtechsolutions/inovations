@@ -1,7 +1,7 @@
 {
-  "name": "retail-innovation-challenge",
+  "name": "bml-innovation-challenge-2026",
   "version": "1.0.0",
-  "description": "Live multi-device app for running the Retail Innovation Challenge: team submissions, panel review, ideation sprint, judged pitches and results.",
+  "description": "Live multi-device app for the BML Refresher Training 2026 Innovation Challenge: challenges, root cause, solution, judged pitches and results.",
   "type": "module",
   "private": true,
   "engines": { "node": "22.x" },

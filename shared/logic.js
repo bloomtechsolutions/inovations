@@ -1,23 +1,25 @@
-// Shared game logic for the Retail Innovation Challenge.
-// Runs on the server (authoritative reducer) and in the browser (derived views).
+// Shared rules for the Innovation Challenge.
+// Runs on the server (the only source of truth) and in the browser (derived views).
 
-export const CATS = ['Customer Engagement', 'Digital Adoption', 'Sales Performance', 'Operational Efficiency', 'Process Improvement', 'Other'];
-export const STAGES = ['Awareness & enquiry', 'Onboarding / account opening', 'Everyday servicing', 'Lending', 'Cards & payments', 'Complaints & resolution', 'Other'];
+export const CATS = ['Internal process', 'Customer pain point', 'New way to serve customers'];
 export const CRIT = [
-  { k: 'Practicality', w: 25 }, { k: 'Customer impact', w: 25 }, { k: 'Business benefit', w: 20 },
-  { k: 'Innovation', w: 15 }, { k: 'Pitch & timing', w: 15 }];
+  { k: 'Problem clarity & relevance', w: 20 }, { k: 'Root cause depth', w: 20 }, { k: 'Solution impact', w: 25 },
+  { k: 'Feasibility', w: 20 }, { k: 'Pitch quality', w: 15 }];
 export const PHASES = [
-  { id: 's5', label: 'Challenge submissions', sub: 'Session 05 · 09:00–09:30' },
-  { id: 'locked', label: 'Challenges locked', sub: 'Before 16:00' },
-  { id: 'sprint', label: 'Ideation sprint', sub: 'Session 10 · 16:03–16:35' },
-  { id: 'pitch', label: 'Pitches', sub: '16:35–16:55' },
-  { id: 'results', label: 'Results', sub: '16:55–17:00' }];
-export const statusLabel = {
-  pending: 'Awaiting panel', approved: 'Approved', refine: 'Sent back to refine', duplicate: 'Duplicate',
-  rejected: 'Not accepted', standby: 'Backup', none: 'Not submitted' };
+  { id: 'submit', label: 'Challenges', sub: 'Stage 1 · submit & approve' },
+  { id: 'locked', label: 'Locked', sub: 'All challenges confirmed' },
+  { id: 'root', label: 'Root cause', sub: 'Stage 2 · 5 min' },
+  { id: 'solution', label: 'Solution', sub: 'Stage 2 · 20 min' },
+  { id: 'pitch', label: 'Pitches', sub: 'Teams on stage' },
+  { id: 'results', label: 'Results', sub: 'Winner announced' }];
+export const statusLabel = { pending: 'Awaiting panel', approved: 'Approved', refine: 'Sent back', none: 'Not submitted' };
 
-export const SPRINT_SECONDS = 32 * 60;
-export const PITCH_SECONDS = 180;
+export const ROOT_SECONDS = 5 * 60;
+export const SOLUTION_SECONDS = 20 * 60;
+export const PITCH_SECONDS = 5 * 60;
+/** Seconds after a timer hits zero during which an in-flight save is still accepted. */
+export const GRACE_SECONDS = 15;
+export const WHYS = 5;
 const MAX = { title: 160, text: 1200, note: 300 };
 
 /* ---------- state ---------- */
@@ -27,28 +29,30 @@ const code = (prefix) => {
   return prefix ? `${prefix}-${s}` : s;
 };
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'team';
+const timer = (dur) => ({ dur, acc: 0, start: null });
 
 export function createState(config) {
   const used = new Set();
   const teams = config.teams.map((name) => {
     let id = slug(name.replace(/^team\s+/i, '')); while (used.has(id)) id += 'x'; used.add(id);
-    return { id, name, code: code(id.slice(0, 3).toUpperCase()), active: 'primary', primary: null, backup: null };
+    return { id, name, code: code(id.slice(0, 3).toUpperCase()), ch: null };
   });
   return {
     version: 1,
-    event: { eyebrow: config.eyebrow || '', title: config.title || 'Retail Innovation Challenge', timeZone: config.timeZone || 'UTC' },
-    auth: { facilitator: config.facilitatorCode || code('FAC'), panel: config.panelCode || code('PNL'), projector: config.projectorCode || code('PRJ') },
-    judges: config.judges.map((name, i) => ({ name, code: code('J' + (i + 1)) })),
+    event: {
+      org: config.org || '', eyebrow: config.eyebrow || '', title: config.title || 'Innovation Challenge',
+      timeZone: config.timeZone || 'UTC' },
+    auth: { facilitator: config.facilitatorCode || code('FAC'), projector: config.projectorCode || code('PRJ') },
+    panelists: (config.panelists || ['Panelist 1', 'Panelist 2']).map((name, i) => ({ name, code: code('P' + (i + 1)) })),
     teams,
     ...freshRound(),
   };
 }
 function freshRound() {
   return {
-    phase: 's5', locked: false, seq: 0, history: [],
-    sprint: { dur: SPRINT_SECONDS, acc: 0, start: null },
-    pitchT: { dur: PITCH_SECONDS, acc: 0, start: null },
-    pitchIdx: 0, reveal: 0, scores: {}, canvases: {},
+    phase: 'submit', locked: false,
+    rootT: timer(ROOT_SECONDS), solT: timer(SOLUTION_SECONDS), pitchT: timer(PITCH_SECONDS),
+    pitchIdx: 0, reveal: 0, scores: {}, work: {},
   };
 }
 
@@ -57,10 +61,9 @@ export function identify(S, raw) {
   const c = String(raw || '').trim().toUpperCase();
   if (!c) return null;
   if (c === S.auth.facilitator.toUpperCase()) return { role: 'facilitator' };
-  if (c === S.auth.panel.toUpperCase()) return { role: 'panel' };
   if (c === S.auth.projector.toUpperCase()) return { role: 'projector' };
-  const j = S.judges.findIndex((x) => x.code.toUpperCase() === c);
-  if (j >= 0) return { role: 'judge', judge: j };
+  const p = S.panelists.findIndex((x) => x.code.toUpperCase() === c);
+  if (p >= 0) return { role: 'panelist', p };
   const t = S.teams.find((x) => x.code.toUpperCase() === c);
   if (t) return { role: 'team', teamId: t.id };
   return null;
@@ -72,63 +75,42 @@ export function redact(S, me) {
   if (me.role !== 'facilitator') {
     delete out.auth;
     out.teams.forEach((t) => { if (!(me.role === 'team' && me.teamId === t.id)) delete t.code; });
-    out.judges.forEach((j, i) => { if (!(me.role === 'judge' && me.judge === i)) delete j.code; });
+    out.panelists.forEach((x, i) => { if (!(me.role === 'panelist' && me.p === i)) delete x.code; });
   }
-  if (me.role === 'judge') out.scores = { [me.judge]: out.scores[me.judge] || {} };
-  else if (me.role === 'team' || me.role === 'panel') out.scores = {};
-  if (me.role === 'team') {
-    for (const k of Object.keys(out.canvases)) if (k !== me.teamId && !['pitch', 'results'].includes(S.phase)) delete out.canvases[k];
+  // Scores stay private until results: panelists see only their own, the room sees them as they are revealed.
+  if (me.role === 'panelist') out.scores = { [me.p]: out.scores[me.p] || {} };
+  else if (me.role !== 'facilitator' && S.phase !== 'results') out.scores = {};
+  if (me.role === 'team' && !['pitch', 'results'].includes(S.phase)) {
+    for (const k of Object.keys(out.work)) if (k !== me.teamId) delete out.work[k];
+  }
+  if (me.role === 'projector' && ['root', 'solution'].includes(S.phase)) {
+    // The big screen only shows progress while teams work.
+    for (const [k, w] of Object.entries(out.work)) out.work[k] = { ...emptyWork(), hasRoot: !!w.root, hasSolution: !!(w.title && w.approach) };
   }
   return out;
 }
 
 /* ---------- derived helpers ---------- */
 export const team = (S, id) => S.teams.find((t) => t.id === id);
-export const act = (t) => t && t[t.active];
-export function teamState(t) {
-  const a = act(t);
-  if (!t.primary || !a) return 'new';
-  if (a.status === 'refine') return 'refine';
-  if (a.status === 'duplicate' || a.status === 'rejected') return 'again';
-  return 'ok';
-}
-export const curStatus = (t) => (teamState(t) === 'new' ? 'none' : act(t).status);
-
-const STOP = new Set(['customers', 'customer', 'takes', 'with', 'that', 'from', 'their', 'into', 'need', 'needs', 'more', 'than', 'have', 'dont', 'don', 'they', 'where', 'what', 'when', 'this', 'can', 'cant', 'easily', 'many', 'means', 'must', 'never', 'could']);
-const words = (s) => new Set(((s || '').toLowerCase().replace(/'/g, '').match(/[a-z]+/g) || []).filter((w) => w.length > 3 && !STOP.has(w)));
-
-/** Earlier (or approved) challenge from another team that looks like this team's active one. */
-export function similarTo(S, t) {
-  const a = act(t); if (!a) return null;
-  const w = words(a.title); let best = null;
-  for (const o of S.teams) {
-    if (o === t) continue;
-    const b = act(o);
-    if (!b || ['duplicate', 'rejected'].includes(b.status)) continue;
-    if (!(b.status === 'approved' || (b.seq || 0) < (a.seq || 0))) continue;
-    const w2 = words(b.title);
-    const inter = [...w].filter((x) => w2.has(x)).length;
-    const uni = new Set([...w, ...w2]).size;
-    const j = uni ? inter / uni : 0;
-    if (j >= 0.34 && (!best || j > best.j)) best = { team: o, j };
-  }
-  return best;
-}
-export const approvedCount = (S) => S.teams.filter((t) => act(t)?.status === 'approved').length;
+export const curStatus = (t) => t.ch?.status || 'none';
+export const approvedCount = (S) => S.teams.filter((t) => t.ch?.status === 'approved').length;
 export const allApproved = (S) => approvedCount(S) === S.teams.length;
 export const phaseIdx = (S) => PHASES.findIndex((p) => p.id === S.phase);
 
-export const elapsed = (x, now) => x.acc + (x.start ? (now - x.start) / 1000 : 0);
+export const elapsed = (x, now) => x.acc + (x.start != null ? (now - x.start) / 1000 : 0);
 export const remaining = (x, now) => Math.max(0, x.dur - elapsed(x, now));
 export const fmt = (s) => { s = Math.ceil(s); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+export const TIMER_OF = { root: 'rootT', solution: 'solT', pitch: 'pitchT' };
+/** True once a started timer has run past zero (plus the grace period). */
+export const timeUp = (x, now, grace = 0) => (x.start != null || x.acc > 0) && elapsed(x, now) > x.dur + grace;
 
-export const emptyCanvas = () => ({ title: '', approach: '', impl: '', benefits: '', saved: '' });
-export const canvasOf = (S, id) => S.canvases[id] || emptyCanvas();
+export const emptyWork = () => ({ whys: Array(WHYS).fill(''), root: '', title: '', approach: '', impl: '', benefits: '', savedRoot: '', savedSol: '' });
+export const workOf = (S, id) => ({ ...emptyWork(), ...(S.work[id] || {}) });
 export const judgeTotal = (c) => c.reduce((s, v, i) => s + (v || 0) * CRIT[i].w, 0) / 5;
 
 export function results(S) {
   return S.teams.map((t) => {
-    const subs = S.judges.map((_, j) => S.scores[j]?.[t.id]).filter((x) => x && x.submitted);
+    const subs = S.panelists.map((_, j) => S.scores[j]?.[t.id]).filter((x) => x && x.submitted);
     const avg = subs.length ? subs.reduce((s, x) => s + judgeTotal(x.c), 0) / subs.length : 0;
     const critAvg = CRIT.map((_, i) => (subs.length ? subs.reduce((s, x) => s + x.c[i], 0) / subs.length : 0));
     return { t, avg, n: subs.length, critAvg };
@@ -149,22 +131,18 @@ export const isUserError = (e) => e instanceof UserError;
 const str = (v, max) => String(v ?? '').trim().slice(0, max);
 function cleanChallenge(p) {
   p = p || {};
-  const c = {
-    title: str(p.title, MAX.title), cat: CATS.includes(p.cat) ? p.cat : CATS[0], stage: STAGES.includes(p.stage) ? p.stage : STAGES[0],
+  return {
+    title: str(p.title, MAX.title), cat: CATS.includes(p.cat) ? p.cat : CATS[0],
     problem: str(p.problem, MAX.text), affects: str(p.affects, MAX.title), why: str(p.why, MAX.text),
   };
-  return c;
-}
-function promote(S, t, now) {
-  if (t.active === 'primary' && t.backup && t.backup.status === 'standby') {
-    t.active = 'backup'; Object.assign(t.backup, { status: 'pending', ts: clock(S, now), seq: ++S.seq });
-    return true;
-  }
-  return false;
 }
 const need = (me, ...roles) => { if (!roles.includes(me.role)) fail('Your device is not allowed to do that.'); };
-const needPhase = (S, ...ps) => { if (!ps.includes(S.phase)) fail('That is not available at this stage of the session.'); };
-const timerKey = (id) => (id === 'sprint' || id === 'pitchT' ? id : fail('Unknown timer.'));
+const needPhase = (S, ...ps) => { if (!ps.includes(S.phase)) fail('That is not available at this stage of the event.'); };
+const timerKey = (id) => (Object.values(TIMER_OF).includes(id) ? id : fail('Unknown timer.'));
+function lockIfDone(S) {
+  if (S.phase === 'submit' && allApproved(S)) { S.locked = true; S.phase = 'locked'; return true; }
+  return false;
+}
 
 /**
  * Applies an action to state in place. Validates before mutating.
@@ -178,106 +156,108 @@ export function apply(S, me, a, now = Date.now(), samples = null) {
       need(me, 'facilitator');
       if (!PHASES.some((p) => p.id === a.id)) fail('Unknown stage.');
       if (a.id === 'locked' && !allApproved(S)) fail(`All ${S.teams.length} teams need an approved challenge first.`);
-      if (!['s5', 'locked'].includes(a.id) && !S.locked) fail('Lock the challenges first.');
+      if (!['submit', 'locked'].includes(a.id) && !S.locked) fail('All challenges must be approved and locked first.');
       if (a.id === 'locked') S.locked = true;
-      if (a.id === 's5') S.locked = false;
+      if (a.id === 'submit') S.locked = false;
       S.phase = a.id;
       if (a.id === 'results') S.reveal = 0;
       return {};
     }
-    case 'lock':
-      need(me, 'facilitator'); needPhase(S, 's5');
-      if (!allApproved(S)) fail(`All ${S.teams.length} teams need an approved challenge first.`);
-      S.locked = true; S.phase = 'locked';
-      return { toast: 'Challenges locked and published to the projector.' };
     case 't-start': {
-      need(me, 'facilitator'); const k = timerKey(a.id); const x = S[k];
-      if (x.start) return {};
+      need(me, 'facilitator'); const x = S[timerKey(a.id)];
+      if (x.start != null) return {};
       if (remaining(x, now) === 0) x.acc = 0;
       x.start = now; return {};
     }
     case 't-pause': {
       need(me, 'facilitator'); const x = S[timerKey(a.id)];
-      if (x.start) { x.acc = Math.min(x.dur, elapsed(x, now)); x.start = null; }
+      if (x.start != null) { x.acc = Math.min(x.dur, elapsed(x, now)); x.start = null; }
       return {};
     }
-    case 't-reset': { need(me, 'facilitator'); const x = S[timerKey(a.id)]; x.acc = 0; x.start = null; return {}; }
+    case 't-add': {
+      need(me, 'facilitator'); const x = S[timerKey(a.id)];
+      // Fold elapsed time into acc (capped at the end), so a timer that already ran out gets a full minute from now.
+      if (x.start != null) { x.acc = Math.min(x.dur, elapsed(x, now)); x.start = now; }
+      x.dur += 60; return {};
+    }
+    case 't-reset': {
+      need(me, 'facilitator'); const k = timerKey(a.id);
+      S[k] = timer({ rootT: ROOT_SECONDS, solT: SOLUTION_SECONDS, pitchT: PITCH_SECONDS }[k]); return {};
+    }
     case 'next-team':
       need(me, 'facilitator'); needPhase(S, 'pitch');
-      if (S.pitchIdx < S.teams.length - 1) { S.pitchIdx++; S.pitchT = { dur: PITCH_SECONDS, acc: 0, start: null }; }
+      if (S.pitchIdx < S.teams.length - 1) { S.pitchIdx++; S.pitchT = timer(PITCH_SECONDS); }
       return {};
     case 'prev-team':
       need(me, 'facilitator'); needPhase(S, 'pitch');
-      if (S.pitchIdx > 0) { S.pitchIdx--; S.pitchT = { dur: PITCH_SECONDS, acc: 0, start: null }; }
+      if (S.pitchIdx > 0) { S.pitchIdx--; S.pitchT = timer(PITCH_SECONDS); }
       return {};
     case 'reveal': need(me, 'facilitator'); needPhase(S, 'results'); S.reveal = Math.min(S.teams.length, S.reveal + 1); return {};
     case 'reveal-reset': need(me, 'facilitator'); S.reveal = 0; return {};
+    case 'rename': {
+      need(me, 'facilitator'); const t = T(a.id); const name = str(a.name, 40);
+      if (!name) fail('Add a team name.');
+      t.name = name; return { toast: 'Team renamed.' };
+    }
     case 'reset-round': {
       need(me, 'facilitator');
       Object.assign(S, freshRound());
-      S.teams.forEach((t) => { t.primary = null; t.backup = null; t.active = 'primary'; });
-      return { toast: 'Event reset. All submissions, canvases and scores were cleared.' };
+      S.teams.forEach((t) => { t.ch = null; });
+      return { toast: 'Event reset. All challenges, work and scores were cleared.' };
     }
 
-    /* ----- panel ----- */
-    case 'approve': case 'undo': case 'dup': case 'refine': case 'reject': {
-      need(me, 'panel'); needPhase(S, 's5');
-      const t = T(a.id); const c = act(t);
+    /* ----- panelists ----- */
+    case 'approve': case 'undo': case 'refine': {
+      need(me, 'panelist'); needPhase(S, 'submit');
+      const t = T(a.id); const c = t.ch;
       if (!c) fail('That team has not submitted yet.');
-      if (a.type === 'undo') { if (c.status !== 'approved') fail('Only an approved challenge can be undone.'); c.status = 'pending'; return {}; }
-      if (c.status !== 'pending') fail('This challenge is no longer waiting for review.');
-      if (a.type === 'approve') { c.status = 'approved'; c.note = ''; return { toast: t.name + ' approved.' }; }
-      if (a.type === 'dup') {
-        const of = T(a.of); if (of === t) fail('Pick another team.');
-        c.status = 'duplicate'; c.note = `Same as ${of.name}'s challenge.`;
-        return { toast: promote(S, t, now) ? t.name + ' moved to its backup challenge.' : t.name + ' asked for a new challenge.' };
+      const by = S.panelists[me.p].name;
+      if (a.type === 'undo') { if (c.status !== 'approved') fail('Only an approved challenge can be undone.'); c.status = 'pending'; c.by = ''; return {}; }
+      if (c.status !== 'pending') fail(c.status === 'approved' ? `Already approved by ${c.by || 'the other panelist'}.` : 'This challenge is waiting for the team.');
+      if (a.type === 'approve') {
+        Object.assign(c, { status: 'approved', note: '', by });
+        return { toast: lockIfDone(S) ? `${t.name} approved. All challenges are now locked.` : t.name + ' approved.' };
       }
       const note = str(a.note, MAX.note);
-      if (!note) fail(a.type === 'refine' ? 'Add a comment so the team knows what to change.' : 'Add a reason for the team.');
-      c.note = note;
-      if (a.type === 'refine') { c.status = 'refine'; return { toast: 'Sent back to ' + t.name + '.' }; }
-      c.status = 'rejected';
-      return { toast: promote(S, t, now) ? t.name + ' moved to its backup challenge.' : t.name + ' asked for a new challenge.' };
+      if (!note) fail('Add a comment so the team knows what to change.');
+      Object.assign(c, { status: 'refine', note, by });
+      return { toast: 'Sent back to ' + t.name + '.' };
     }
 
     /* ----- team ----- */
-    case 'submit-new': case 'resubmit': case 'again': {
-      need(me, 'team'); needPhase(S, 's5');
+    case 'submit': case 'resubmit': {
+      need(me, 'team'); needPhase(S, 'submit');
       const t = T(me.teamId); const p = cleanChallenge(a.p);
       if (!p.title) fail('Add a challenge title.');
-      const st = teamState(t); const ts = clock(S, now);
-      if (a.type === 'submit-new') {
-        if (st !== 'new') fail('Your team has already submitted.');
-        const b = cleanChallenge(a.b);
-        t.primary = { ...p, status: 'pending', ts, note: '', seq: ++S.seq };
-        t.backup = b.title ? { ...b, status: 'standby', ts, note: '' } : null;
-        t.active = 'primary';
-      } else if (a.type === 'resubmit') {
-        if (st !== 'refine') fail('Nothing to resubmit.');
-        Object.assign(act(t), p, { status: 'pending', note: '', ts, seq: ++S.seq });
-        return { toast: 'Resubmitted.' };
-      } else {
-        if (st !== 'again') fail('Nothing to replace.');
-        S.history.push({ team: t.name, c: act(t) });
-        t.backup = { ...p, status: 'pending', ts, note: '', seq: ++S.seq }; t.active = 'backup';
-      }
-      return { toast: 'Submitted to the panel.' };
+      if (!p.problem) fail('Describe what happens today.');
+      if (a.type === 'submit' && t.ch) fail('Your team has already entered its challenge. Each team can enter only one.');
+      if (a.type === 'resubmit' && t.ch?.status !== 'refine') fail('Nothing to resubmit.');
+      t.ch = { ...p, status: 'pending', note: '', by: '', ts: clock(S, now) };
+      return { toast: a.type === 'submit' ? 'Challenge entered. Come up and explain it to the panel.' : 'Resubmitted to the panel.' };
     }
-    case 'canvas': {
-      need(me, 'team'); needPhase(S, 'sprint');
-      const v = a.c || {};
-      S.canvases[me.teamId] = {
-        title: str(v.title, MAX.title), approach: str(v.approach, MAX.text), impl: str(v.impl, MAX.text),
-        benefits: str(v.benefits, MAX.text), saved: clock(S, now) };
-      return { toast: 'Canvas saved.' };
+    case 'save-root': case 'save-solution': {
+      need(me, 'team');
+      const isRoot = a.type === 'save-root';
+      needPhase(S, isRoot ? 'root' : 'solution');
+      if (timeUp(S[isRoot ? 'rootT' : 'solT'], now, GRACE_SECONDS)) fail('Time is up. Your last save has been kept.');
+      const w = workOf(S, me.teamId); const v = a.w || {};
+      if (isRoot) {
+        w.whys = Array.from({ length: WHYS }, (_, i) => str(v.whys?.[i], MAX.text));
+        w.root = str(v.root, MAX.text); w.savedRoot = clock(S, now);
+      } else {
+        w.title = str(v.title, MAX.title); w.approach = str(v.approach, MAX.text);
+        w.impl = str(v.impl, MAX.text); w.benefits = str(v.benefits, MAX.text); w.savedSol = clock(S, now);
+      }
+      S.work[me.teamId] = w;
+      return a.quiet ? {} : { toast: 'Saved.' };
     }
 
-    /* ----- judge ----- */
+    /* ----- scoring (panelists) ----- */
     case 'score': case 'submit-score': {
-      need(me, 'judge'); needPhase(S, 'pitch', 'results');
+      need(me, 'panelist'); needPhase(S, 'pitch', 'results');
       T(a.team);
-      const mine = S.scores[me.judge] || (S.scores[me.judge] = {});
-      const s = mine[a.team] || (mine[a.team] = { c: [0, 0, 0, 0, 0], submitted: false });
+      const mine = S.scores[me.p] || (S.scores[me.p] = {});
+      const s = mine[a.team] || (mine[a.team] = { c: CRIT.map(() => 0), submitted: false });
       if (s.submitted) fail('This score is already submitted.');
       if (a.type === 'score') {
         const ci = Number(a.c), v = Number(a.v);
@@ -289,36 +269,37 @@ export function apply(S, me, a, now = Date.now(), samples = null) {
     }
 
     /* ----- rehearsal shortcuts (facilitator) ----- */
-    case 'demo-s5': {
-      need(me, 'facilitator'); needPhase(S, 's5'); if (!samples) fail('Sample data is not available.');
+    case 'demo-submit': {
+      need(me, 'facilitator'); needPhase(S, 'submit'); if (!samples) fail('Sample data is not available.');
       const ts = clock(S, now);
       S.teams.forEach((t, i) => {
-        if (t.primary) return;
-        const smp = samples.challenges[i % samples.challenges.length];
-        t.primary = { ...cleanChallenge(smp.primary), status: 'pending', ts, note: '', seq: ++S.seq };
-        t.backup = { ...cleanChallenge(smp.backup), status: 'standby', ts, note: '' };
-        t.active = 'primary';
+        if (!t.ch) t.ch = { ...cleanChallenge(samples.challenges[i % samples.challenges.length]), status: 'pending', note: '', by: '', ts };
       });
-      let dups = [];
-      for (const t of S.teams) {
-        const c = act(t);
-        if (c && c.status === 'pending') { const sim = similarTo(S, t); if (sim) { c.status = 'duplicate'; c.note = `Same as ${sim.team.name}'s challenge.`; promote(S, t, now); dups.push(t.name); } }
-      }
-      for (const t of S.teams) { const c = act(t); if (c && ['pending', 'refine'].includes(c.status)) c.status = 'approved'; }
-      return { toast: 'Sample submissions added and approved.' + (dups.length ? ` ${dups.join(', ')} moved to backup as duplicate.` : '') };
+      return { toast: 'Sample challenges entered. Approve them from a panelist device.' };
     }
-    case 'demo-canvas':
+    case 'demo-approve': {
+      need(me, 'facilitator'); needPhase(S, 'submit');
+      S.teams.forEach((t) => { if (t.ch) Object.assign(t.ch, { status: 'approved', note: '', by: S.panelists[0].name }); });
+      return { toast: lockIfDone(S) ? 'All approved and locked.' : 'Submitted challenges approved.' };
+    }
+    case 'demo-root': case 'demo-solution': {
       need(me, 'facilitator'); if (!samples) fail('Sample data is not available.');
-      S.teams.forEach((t, i) => { S.canvases[t.id] = { ...samples.canvases[i % samples.canvases.length], saved: clock(S, now) }; });
-      return { toast: 'Sample canvases filled.' };
+      S.teams.forEach((t, i) => {
+        const smp = samples.work[i % samples.work.length]; const w = workOf(S, t.id);
+        if (a.type === 'demo-root') Object.assign(w, { whys: smp.whys.slice(), root: smp.root, savedRoot: clock(S, now) });
+        else Object.assign(w, { title: smp.title, approach: smp.approach, impl: smp.impl, benefits: smp.benefits, savedSol: clock(S, now) });
+        S.work[t.id] = w;
+      });
+      return { toast: a.type === 'demo-root' ? 'Sample root causes filled.' : 'Sample solutions filled.' };
+    }
     case 'demo-scores': {
       need(me, 'facilitator'); if (!samples) fail('Sample data is not available.');
-      const n = Math.max(1, S.judges.length - 1);
+      const n = Math.max(1, S.panelists.length - 1);
       for (let j = 0; j < n; j++) {
         S.scores[j] = S.scores[j] || {};
         S.teams.forEach((t, i) => { S.scores[j][t.id] = { c: samples.scores[(i + j * 3) % samples.scores.length].slice(), submitted: true }; });
       }
-      return { toast: `Sample scores added for ${n} judge${n > 1 ? 's' : ''}.` };
+      return { toast: `Sample scores added for ${n} panelist${n > 1 ? 's' : ''}.` };
     }
     default: fail('Unknown action.');
   }

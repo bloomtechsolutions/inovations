@@ -1,7 +1,8 @@
 {
-  "title": "Retail Innovation Challenge",
-  "eyebrow": "BML Retail Training · Sat 7 Nov · Sessions 05 & 10",
+  "org": "Bank of Maldives",
+  "title": "Innovation Challenge",
+  "eyebrow": "Bank of Maldives · Refresher Training 2026",
   "timeZone": "Indian/Maldives",
-  "teams": ["Team Addu", "Team Laamu", "Team Baa", "Team Raa", "Team Gaafu", "Team Haa Alif"],
-  "judges": ["Judge 1", "Judge 2", "Judge 3"]
+  "teams": ["Team 1", "Team 2", "Team 3", "Team 4", "Team 5", "Team 6"],
+  "panelists": ["Panelist 1", "Panelist 2"]
 }

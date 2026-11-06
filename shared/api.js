@@ -4,7 +4,6 @@ import { createState, identify, redact, apply, isUserError } from './logic.js';
 /** Codes set in the environment always win over stored ones. */
 function withEnv(S, env) {
   if (env.FACILITATOR_CODE) S.auth.facilitator = env.FACILITATOR_CODE;
-  if (env.PANEL_CODE) S.auth.panel = env.PANEL_CODE;
   if (env.PROJECTOR_CODE) S.auth.projector = env.PROJECTOR_CODE;
   return S;
 }

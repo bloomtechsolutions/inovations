@@ -1,4 +1,4 @@
-// Retail Innovation Challenge — local server.
+// Innovation Challenge — local server.
 // Zero dependencies. Uses a JSON file for storage, or Supabase when SUPABASE_URL is set (same as on Vercel).
 import http from 'node:http';
 import fs from 'node:fs';
@@ -51,12 +51,11 @@ http.createServer(async (req, res) => {
   await handle({ method: 'POST', route: 'login', body: { code: '' } }); // creates the event on first run
   const S = (await store.load()).state;
   const pad = (x) => x.padEnd(16);
-  console.log(`\n  Retail Innovation Challenge is running on http://localhost:${PORT}  (${env.SUPABASE_URL ? 'Supabase' : 'local file'} storage)\n`);
+  console.log(`\n  Innovation Challenge is running on http://localhost:${PORT}  (${env.SUPABASE_URL ? 'Supabase' : 'local file'} storage)\n`);
   console.log('  Sign-in codes (also on the facilitator\'s "Sign-in codes" tab):');
   console.log(`    ${pad('Facilitator')}${env.FACILITATOR_CODE || S.auth.facilitator}`);
-  console.log(`    ${pad('Review panel')}${env.PANEL_CODE || S.auth.panel}`);
   console.log(`    ${pad('Projector')}${env.PROJECTOR_CODE || S.auth.projector}`);
-  S.judges.forEach((j) => console.log(`    ${pad(j.name)}${j.code}`));
+  S.panelists.forEach((j) => console.log(`    ${pad(j.name)}${j.code}`));
   S.teams.forEach((t) => console.log(`    ${pad(t.name)}${t.code}`));
   console.log('');
 });
