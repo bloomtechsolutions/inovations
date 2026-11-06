@@ -47,54 +47,77 @@ export class AiError extends Error {}
 const isSlow = (e) => (e instanceof ApiError ? [503, 504].includes(e.status) : e?.name === 'AbortError' || /time(d)? ?out|deadline/i.test(String(e?.message)));
 const rejectsThinking = (e) => e instanceof ApiError && e.status === 400 && /think/i.test(String(e.message));
 
+/** Pulls the first JSON object out of a reply (for plain-text mode, where the model may add a code fence). */
+function parseJson(text) {
+  if (!text) return null;
+  try { return JSON.parse(text); } catch {}
+  const a = text.indexOf('{'), b = text.lastIndexOf('}');
+  if (a >= 0 && b > a) { try { return JSON.parse(text.slice(a, b + 1)); } catch {} }
+  return null;
+}
+const shapeOf = (schema) => JSON.stringify(Object.fromEntries(Object.entries(schema.properties).map(([k, v]) => [k, v.type === 'array' ? ['...'] : '...'])));
+
 /** Returns ask(kind, S, teamId, live) or null when no API key is configured. */
 export function createAi(env) {
   if (!env.GEMINI_API_KEY) return null;
   const model = env.GEMINI_MODEL || DEFAULT_MODEL;
-  // Short answers need little thinking: low first, and minimal on the retry if Gemini is slow.
-  const firstLevel = ThinkingLevel[String(env.GEMINI_THINKING || 'LOW').toUpperCase()] || ThinkingLevel.LOW;
-  const httpOptions = { timeout: 25_000 };
-  if (env.GEMINI_BASE_URL) httpOptions.baseUrl = env.GEMINI_BASE_URL; // local testing only
-  const client = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY, httpOptions });
+  const level = ThinkingLevel[String(env.GEMINI_THINKING || 'LOW').toUpperCase()] || ThinkingLevel.LOW;
+  const baseUrl = env.GEMINI_BASE_URL; // local testing only
+  const client = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY, ...(baseUrl ? { httpOptions: { baseUrl } } : {}) });
+  let useThinking = true; // switched off for good if the model rejects the thinking setting
 
-  const call = (task, prompt, level) => client.models.generateContent({
-    model,
-    contents: prompt,
-    config: {
+  // strict: Gemini's JSON mode with our schema. Otherwise plain text with the JSON shape in the prompt,
+  // which avoids JSON-mode replies that never end.
+  async function call(task, prompt, strict, timeout) {
+    const config = {
       systemInstruction: CONTEXT,
-      responseMimeType: 'application/json',
-      responseJsonSchema: task.schema,
-      maxOutputTokens: 8192,
-      ...(level ? { thinkingConfig: { thinkingLevel: level } } : {}),
-    },
-  });
+      maxOutputTokens: 2048,
+      httpOptions: { timeout },
+      ...(useThinking ? { thinkingConfig: { thinkingLevel: level } } : {}),
+      ...(strict ? { responseMimeType: 'application/json', responseJsonSchema: task.schema } : {}),
+    };
+    const contents = strict ? prompt : `${prompt}\n\nReply with only a JSON object of exactly this shape, and nothing else: ${shapeOf(task.schema)}`;
+    try { return await client.models.generateContent({ model, contents, config }); }
+    catch (e) {
+      if (useThinking && rejectsThinking(e)) { console.warn('Gemini rejected the thinking setting; continuing without it:', e.message); useThinking = false; return call(task, prompt, strict, timeout); }
+      throw e;
+    }
+  }
+  const describe = (res) => `finish=${res?.candidates?.[0]?.finishReason} tokens=${JSON.stringify(res?.usageMetadata || {})}`;
 
   return async function ask(kind, S, teamId, live = {}) {
     const task = TASKS[kind]; if (!task) throw new AiError('Unknown assistant request.');
     const prompt = task.ask(teamWork(S, teamId, live));
     const started = Date.now();
-    let res;
+    let res, out = null;
     try {
-      try { res = await call(task, prompt, firstLevel); }
-      catch (e) {
-        if (rejectsThinking(e)) { console.warn('Gemini rejected thinkingLevel; retrying without it:', e.message); res = await call(task, prompt, null); }
-        else if (isSlow(e)) { console.warn(`Gemini ${kind} slow after ${Date.now() - started}ms (${e.status || e.name}); retrying with minimal thinking`); res = await call(task, prompt, ThinkingLevel.MINIMAL); }
-        else throw e;
+      try {
+        res = await call(task, prompt, true, 20_000);
+        out = parseJson(res.text);
+        if (!out) console.warn(`Gemini ${kind} strict reply unusable after ${Date.now() - started}ms (${describe(res)}); retrying in text mode`);
+      } catch (e) {
+        if (!isSlow(e)) throw e;
+        console.warn(`Gemini ${kind} strict mode slow after ${Date.now() - started}ms (${e.status || e.name}); retrying in text mode`);
+      }
+      if (!out) {
+        if (res?.promptFeedback?.blockReason) throw new AiError('The assistant could not help with this one.');
+        res = await call(task, prompt, false, 30_000);
+        out = parseJson(res.text);
       }
     } catch (e) {
+      if (e instanceof AiError) throw e;
       console.error(`Gemini ${kind} failed after ${Date.now() - started}ms:`, e.status || e.name, e.message);
       if (isSlow(e)) throw new AiError('The assistant is taking too long right now. Try again in a minute.');
       if (e instanceof ApiError) {
         if (e.status === 429) throw new AiError('The assistant is busy (free limit reached for the moment). Try again in a minute.');
-        if ([400, 401, 403, 404].includes(e.status)) throw new AiError('The assistant is not set up correctly. Ask the facilitator.');
-        throw new AiError('The assistant could not answer right now. Try again.');
+        if ([401, 403].includes(e.status) || (e.status === 400 && /api key/i.test(e.message))) throw new AiError('The assistant is not set up correctly. Ask the facilitator.');
+        if (e.status === 404) throw new AiError('The assistant model is not available. Ask the facilitator.');
       }
-      throw e;
+      throw new AiError('The assistant could not answer right now. Try again.');
     }
-    console.log(`Gemini ${kind} answered in ${Date.now() - started}ms (${model})`);
-    if (res.promptFeedback?.blockReason) throw new AiError('The assistant could not help with this one.');
-    const out = res.text;
-    if (!out) throw new AiError('The assistant could not help with this one.');
-    try { return JSON.parse(out); } catch { throw new AiError('The assistant gave an unreadable answer. Try again.'); }
+    if (res?.promptFeedback?.blockReason) throw new AiError('The assistant could not help with this one.');
+    if (!out) { console.error(`Gemini ${kind} gave no usable JSON (${describe(res)}): ${String(res?.text).slice(0, 300)}`); throw new AiError('The assistant gave an unreadable answer. Try again.'); }
+    console.log(`Gemini ${kind} answered in ${Date.now() - started}ms (${model}, ${describe(res)})`);
+    return out;
   };
 }
