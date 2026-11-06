@@ -2,16 +2,12 @@
 // Runs on the server (the only source of truth) and in the browser (derived views).
 
 export const CATS = ['Internal process', 'Customer pain point', 'New way to serve customers'];
-export const CRIT = [
-  { k: 'Problem clarity & relevance', w: 20 }, { k: 'Root cause depth', w: 20 }, { k: 'Solution impact', w: 25 },
-  { k: 'Feasibility', w: 20 }, { k: 'Pitch quality', w: 15 }];
 export const PHASES = [
   { id: 'submit', label: 'Challenges', sub: 'Stage 1 · submit & approve' },
   { id: 'locked', label: 'Locked', sub: 'All challenges confirmed' },
   { id: 'root', label: 'Root cause', sub: 'Stage 2 · 5 min' },
   { id: 'solution', label: 'Solution', sub: 'Stage 2 · 20 min' },
-  { id: 'pitch', label: 'Pitches', sub: 'Teams on stage' },
-  { id: 'results', label: 'Results', sub: 'Winner announced' }];
+  { id: 'pitch', label: 'Pitches', sub: 'Teams on stage' }];
 export const statusLabel = { pending: 'Awaiting panel', approved: 'Approved', refine: 'Sent back', none: 'Not submitted' };
 
 export const ROOT_SECONDS = 5 * 60;
@@ -52,7 +48,7 @@ function freshRound() {
   return {
     phase: 'submit', locked: false,
     rootT: timer(ROOT_SECONDS), solT: timer(SOLUTION_SECONDS), pitchT: timer(PITCH_SECONDS),
-    pitchIdx: 0, reveal: 0, scores: {}, work: {},
+    pitchIdx: 0, work: {},
   };
 }
 
@@ -77,10 +73,7 @@ export function redact(S, me) {
     out.teams.forEach((t) => { if (!(me.role === 'team' && me.teamId === t.id)) delete t.code; });
     out.panelists.forEach((x, i) => { if (!(me.role === 'panelist' && me.p === i)) delete x.code; });
   }
-  // Scores stay private until results: panelists see only their own, the room sees them as they are revealed.
-  if (me.role === 'panelist') out.scores = { [me.p]: out.scores[me.p] || {} };
-  else if (me.role !== 'facilitator' && S.phase !== 'results') out.scores = {};
-  if (me.role === 'team' && !['pitch', 'results'].includes(S.phase)) {
+  if (me.role === 'team' && S.phase !== 'pitch') {
     for (const k of Object.keys(out.work)) if (k !== me.teamId) delete out.work[k];
   }
   if (me.role === 'projector' && ['root', 'solution'].includes(S.phase)) {
@@ -106,16 +99,6 @@ export const timeUp = (x, now, grace = 0) => (x.start != null || x.acc > 0) && e
 
 export const emptyWork = () => ({ whys: Array(WHYS).fill(''), root: '', title: '', approach: '', impl: '', benefits: '', savedRoot: '', savedSol: '' });
 export const workOf = (S, id) => ({ ...emptyWork(), ...(S.work[id] || {}) });
-export const judgeTotal = (c) => c.reduce((s, v, i) => s + (v || 0) * CRIT[i].w, 0) / 5;
-
-export function results(S) {
-  return S.teams.map((t) => {
-    const subs = S.panelists.map((_, j) => S.scores[j]?.[t.id]).filter((x) => x && x.submitted);
-    const avg = subs.length ? subs.reduce((s, x) => s + judgeTotal(x.c), 0) / subs.length : 0;
-    const critAvg = CRIT.map((_, i) => (subs.length ? subs.reduce((s, x) => s + x.c[i], 0) / subs.length : 0));
-    return { t, avg, n: subs.length, critAvg };
-  }).sort((a, b) => b.avg - a.avg);
-}
 
 export function clock(S, now) {
   try {
@@ -160,7 +143,6 @@ export function apply(S, me, a, now = Date.now(), samples = null) {
       if (a.id === 'locked') S.locked = true;
       if (a.id === 'submit') S.locked = false;
       S.phase = a.id;
-      if (a.id === 'results') S.reveal = 0;
       return {};
     }
     case 't-start': {
@@ -192,8 +174,6 @@ export function apply(S, me, a, now = Date.now(), samples = null) {
       need(me, 'facilitator'); needPhase(S, 'pitch');
       if (S.pitchIdx > 0) { S.pitchIdx--; S.pitchT = timer(PITCH_SECONDS); }
       return {};
-    case 'reveal': need(me, 'facilitator'); needPhase(S, 'results'); S.reveal = Math.min(S.teams.length, S.reveal + 1); return {};
-    case 'reveal-reset': need(me, 'facilitator'); S.reveal = 0; return {};
     case 'rename': {
       need(me, 'facilitator'); const t = T(a.id); const name = str(a.name, 40);
       if (!name) fail('Add a team name.');
@@ -203,7 +183,7 @@ export function apply(S, me, a, now = Date.now(), samples = null) {
       need(me, 'facilitator');
       Object.assign(S, freshRound());
       S.teams.forEach((t) => { t.ch = null; });
-      return { toast: 'Event reset. All challenges, work and scores were cleared.' };
+      return { toast: 'Event reset. All challenges and team work were cleared.' };
     }
 
     /* ----- panelists ----- */
@@ -252,22 +232,6 @@ export function apply(S, me, a, now = Date.now(), samples = null) {
       return a.quiet ? {} : { toast: 'Saved.' };
     }
 
-    /* ----- scoring (panelists) ----- */
-    case 'score': case 'submit-score': {
-      need(me, 'panelist'); needPhase(S, 'pitch', 'results');
-      T(a.team);
-      const mine = S.scores[me.p] || (S.scores[me.p] = {});
-      const s = mine[a.team] || (mine[a.team] = { c: CRIT.map(() => 0), submitted: false });
-      if (s.submitted) fail('This score is already submitted.');
-      if (a.type === 'score') {
-        const ci = Number(a.c), v = Number(a.v);
-        if (!(ci >= 0 && ci < CRIT.length && Number.isInteger(ci)) || ![1, 2, 3, 4, 5].includes(v)) fail('Invalid score.');
-        s.c[ci] = v; return {};
-      }
-      if (!s.c.every((x) => x > 0)) fail('Score every criterion first.');
-      s.submitted = true; return { toast: 'Score submitted and locked.' };
-    }
-
     /* ----- rehearsal shortcuts (facilitator) ----- */
     case 'demo-submit': {
       need(me, 'facilitator'); needPhase(S, 'submit'); if (!samples) fail('Sample data is not available.');
@@ -291,15 +255,6 @@ export function apply(S, me, a, now = Date.now(), samples = null) {
         S.work[t.id] = w;
       });
       return { toast: a.type === 'demo-root' ? 'Sample root causes filled.' : 'Sample solutions filled.' };
-    }
-    case 'demo-scores': {
-      need(me, 'facilitator'); if (!samples) fail('Sample data is not available.');
-      const n = Math.max(1, S.panelists.length - 1);
-      for (let j = 0; j < n; j++) {
-        S.scores[j] = S.scores[j] || {};
-        S.teams.forEach((t, i) => { S.scores[j][t.id] = { c: samples.scores[(i + j * 3) % samples.scores.length].slice(), submitted: true }; });
-      }
-      return { toast: `Sample scores added for ${n} panelist${n > 1 ? 's' : ''}.` };
     }
     default: fail('Unknown action.');
   }

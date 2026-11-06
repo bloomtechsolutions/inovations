@@ -1,6 +1,6 @@
 import {
-  CATS, CRIT, PHASES, WHYS, statusLabel, team, curStatus, approvedCount, allApproved, phaseIdx,
-  remaining, fmt, timeUp, TIMER_OF, workOf, judgeTotal, results,
+  CATS, PHASES, WHYS, statusLabel, team, curStatus, approvedCount, allApproved, phaseIdx,
+  remaining, fmt, timeUp, TIMER_OF, workOf,
 } from '/shared/logic.js';
 
 /* ---------- client state ---------- */
@@ -79,7 +79,6 @@ function signOut() { POLL++; VERSION = null; CODE = null; ME = null; S = null; s
 
 /* ---------- shared bits ---------- */
 const ROLE_NAME = { facilitator: 'Facilitator', team: 'Team', panelist: 'Panelist', projector: 'Projector' };
-const ordinal = (n) => n + ((n % 100 >= 11 && n % 100 <= 13) ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th'));
 const timerClass = (key, r, big) => {
   if (big && r === 0) return 'done';
   const red = key === 'pitchT' ? 30 : 60, amber = key === 'pitchT' ? 60 : key === 'rootT' ? 120 : 300;
@@ -158,26 +157,18 @@ function vFacilitator() {
       ${demo([['demo-solution', 'Fill sample solutions']])}</div>`;
   } else if (S.phase === 'pitch') {
     const t = S.teams[S.pitchIdx];
-    const sc = S.teams.map((tt, i) => `<tr><td>${i + 1}</td><td>${esc(tt.name)}${i === S.pitchIdx ? ' <span class="now-badge">On stage</span>' : ''}</td>${S.panelists.map((_, j) => `<td>${S.scores[j]?.[tt.id]?.submitted ? '✓' : '–'}</td>`).join('')}</tr>`).join('');
     body = `<div class="card stack"><div><h2>Pitches · ${S.pitchIdx + 1} of ${n}</h2><p class="lede">On stage: <b>${esc(t.name)}</b>. The big screen shows their challenge, root cause and solution with the countdown.</p></div>
       ${timerCtl('pitchT')}
       <div class="row"><button class="btn" data-act="prev-team" ${S.pitchIdx ? '' : 'disabled'}>Previous team</button>
-      ${S.pitchIdx < n - 1 ? `<button class="btn primary" data-act="next-team">Next team</button>` : `<button class="btn primary" data-act="phase" data-id="results">Go to results</button>`}</div>
-      <div class="tbl"><table class="t"><thead><tr><th>#</th><th>Team</th>${S.panelists.map((j) => `<th>${esc(j.name)}</th>`).join('')}</tr></thead><tbody>${sc}</tbody></table></div>
-      ${demo([['demo-scores', 'Fill sample scores for one panelist']])}</div>`;
-  } else {
-    const res = results(S);
-    const rows = res.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.t.name)}</td><td>${esc(r.t.ch?.title)}</td><td class="n">${r.avg.toFixed(1)}</td><td class="n">${r.n}/${S.panelists.length}</td></tr>`).join('');
-    body = `<div class="card stack"><div><h2>Results</h2><p class="lede">Reveal from last place up. Each score is the average of both panelists' weighted scores, out of 100.</p></div>
-      <div class="row"><button class="btn primary" data-act="reveal" ${S.reveal >= n ? 'disabled' : ''}>${S.reveal === 0 ? `Reveal ${ordinal(n)} place` : S.reveal >= n ? 'All revealed' : S.reveal === n - 1 ? 'Reveal the winner' : 'Reveal next'}</button>
-      <button class="btn" data-act="reveal-reset">Hide all</button><button class="btn" data-act="export">Download everything (CSV)</button></div>
-      <div class="tbl"><table class="t"><thead><tr><th>Rank</th><th>Team</th><th>Challenge</th><th style="text-align:right">Score</th><th style="text-align:right">Panelists</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+      ${S.pitchIdx < n - 1 ? `<button class="btn primary" data-act="next-team">Next team</button>` : '<span class="lede" style="margin:0">This is the last team.</span>'}</div>
+      <ul class="board">${S.teams.map((tt, i) => `<li><div class="t"><b>${i + 1}. ${esc(tt.name)}</b><div>${esc(workOf(S, tt.id).title || tt.ch?.title)}</div></div>${i === S.pitchIdx ? '<span class="now-badge">On stage</span>' : i < S.pitchIdx ? '<span class="code">Done</span>' : ''}</li>`).join('')}</ul>
+      <div class="row"><button class="btn" data-act="export">Download everything (CSV)</button></div></div>`;
   }
   return `<div class="grid g2">${body}
     <div class="stack"><div class="card"><h3>Event stages</h3><p class="lede">Moves every screen to the selected stage at once.</p>
       <div class="stack">${PHASES.map((p, i) => `<button class="btn ${i === pi ? 'primary' : ''} small" style="text-align:left" data-act="phase" data-id="${p.id}" ${(p.id !== 'submit' && !S.locked && !(p.id === 'locked' && allApproved(S))) ? 'disabled' : ''}>${i + 1}. ${p.label}</button>`).join('')}</div>
       ${!S.locked ? '<p class="lede" style="margin:10px 0 0;font-size:13px">Stage 2 opens once every challenge is approved.</p>' : S.phase !== 'submit' ? '<p class="lede" style="margin:10px 0 0;font-size:13px">Going back to Challenges unlocks them for changes.</p>' : ''}</div>
-      <div class="card stack"><h3>Start over</h3><p class="lede" style="margin:0">Clears every challenge, root cause, solution and score. Sign-in codes stay the same.</p>
+      <div class="card stack"><h3>Start over</h3><p class="lede" style="margin:0">Clears every challenge, root cause and solution. Sign-in codes stay the same.</p>
       <div><button class="btn bad small" data-act="reset-round">Reset event</button></div></div></div></div>`;
 }
 function lockedList() { return `<ul class="board">${S.teams.map((t) => `<li><div class="t"><b>${esc(t.name)}</b><div>${esc(t.ch?.title)}</div></div><span class="tag">${esc(t.ch?.cat)}</span></li>`).join('')}</ul>`; }
@@ -191,7 +182,7 @@ function vCodes() {
       <div style="text-align:right"><div class="code" style="font-size:15px;color:var(--ink)">${esc(t.code)}</div><button class="link" data-act="copy" data-id="${esc(link(t.code))}">Copy sign-in link</button></div></li>`).join('')}</ul></div>
     <div class="stack"><div class="card"><h3>Staff</h3><ul class="board">
       ${row('Facilitator', S.auth.facilitator, 'This device')}${row('Projector', S.auth.projector, 'Big screen, read only')}
-      ${S.panelists.map((j) => row(j.name, j.code, 'Approves challenges and scores pitches')).join('')}</ul></div></div></div>`;
+      ${S.panelists.map((j) => row(j.name, j.code, 'Approves challenges')).join('')}</ul></div></div></div>`;
 }
 
 /* ---------- team ---------- */
@@ -312,26 +303,20 @@ function vPanelist() {
         <li>When all ${n} are approved, the challenges lock and show on the big screen.</li></ul></div>
         <div class="card"><h3>A good challenge is</h3><ul class="plain"><li>A real problem for customers or staff</li><li>Specific enough to solve in 20 minutes</li><li>Something the team can influence</li><li>Different from the other teams' challenges</li></ul></div></div></div>`;
   }
-  if (!['pitch', 'results'].includes(S.phase)) {
+  if (S.phase !== 'pitch') {
     const cards = S.teams.map((t) => { const w = workOf(S, t.id); return `<div class="card stack"><div><span class="eyebrow">${esc(t.name)}</span><h3>${esc(t.ch?.title)}</h3></div>
       <dl class="kv"><dt>Root cause</dt><dd>${esc(w.root || '—')}</dd><dt>Solution</dt><dd>${esc(w.title || '—')}</dd></dl></div>`; }).join('');
     return `${head}<div class="grid g2" style="margin-top:16px"><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr))">${cards}</div>
-      <div class="card"><h3>Scoring opens at the pitches</h3><p class="lede">You will score each team from 1 to 5 on five criteria. The best challenge and solution wins.</p>
-      <div class="tbl"><table class="t"><thead><tr><th>Criterion</th><th style="text-align:right">Weight</th></tr></thead><tbody>${CRIT.map((x) => `<tr><td>${x.k}</td><td class="n">${x.w}%</td></tr>`).join('')}</tbody></table></div></div></div>`;
+      <div class="card"><h3>Next: the pitches</h3><p class="lede" style="margin:0">Each team presents its challenge, root cause and solution. The panel then chooses the best challenge and solution.</p></div></div>`;
   }
-  const mine = S.scores[ME.p] || {};
   const cards = S.teams.map((t, i) => {
-    const s = mine[t.id] || { c: CRIT.map(() => 0), submitted: false }; const w = workOf(S, t.id);
-    const done = s.c.every((v) => v > 0); const onStage = S.phase === 'pitch' && i === S.pitchIdx;
+    const w = workOf(S, t.id); const onStage = i === S.pitchIdx;
     return `<div class="card stack" ${onStage ? 'style="border-color:var(--accent)"' : ''}>
       <div class="row between"><div><span class="eyebrow">Pitch ${i + 1} · ${esc(t.name)}</span><h3>${esc(w.title || t.ch?.title)}</h3></div>
-      ${onStage ? '<span class="now-badge">On stage</span>' : s.submitted ? '<span class="pill p-approved">Submitted</span>' : ''}</div>
-      <details id="det-${t.id}"><summary>Challenge, root cause and solution</summary>${summary(t, w)}</details>
-      <div class="crit">${CRIT.map((x, ci) => `<span>${x.k} <span class="code">${x.w}%</span></span><div class="dots">${[1, 2, 3, 4, 5].map((v) => `<button data-act="score" data-team="${t.id}" data-c="${ci}" data-v="${v}" aria-pressed="${s.c[ci] === v}" ${s.submitted ? 'disabled' : ''} aria-label="${x.k} ${v}">${v}</button>`).join('')}</div>`).join('')}</div>
-      <div class="row between"><span class="code">Score: ${done ? judgeTotal(s.c).toFixed(0) + ' / 100' : '—'}</span>
-      ${s.submitted ? '<span class="code">Locked</span>' : `<button class="btn primary small" data-act="submit-score" data-team="${t.id}" ${done ? '' : 'disabled'}>Submit score</button>`}</div></div>`;
+      ${onStage ? '<span class="now-badge">On stage</span>' : ''}</div>
+      ${onStage ? summary(t, w) : `<details id="det-${t.id}"><summary>Challenge, root cause and solution</summary>${summary(t, w)}</details>`}</div>`;
   }).join('');
-  return head + `<div class="grid" style="margin-top:16px;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr))">${cards}</div>`;
+  return head + `<div class="grid" style="margin-top:16px;align-items:start;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr))">${cards}</div>`;
 }
 
 /* ---------- projector ---------- */
@@ -360,12 +345,6 @@ function vProjector() {
      <div class="pitch"><div class="stack"><h2>${esc(w.title || c.title)}</h2>
        ${box('Challenge · ' + esc(c.cat), [c.title, c.problem].filter(Boolean).join(' — '))}${box('Root cause', w.root)}${box('Solution', w.approach)}${box('How it works', w.impl)}${box('Expected impact', w.benefits)}</div>
        <div class="stack"><div class="eyebrow">Time remaining</div>${timerEl('pitchT', true)}</div></div>`;
-  } else {
-    const res = results(S); const all = S.reveal >= n; const win = res[0];
-    inner = `${top('Results', esc(S.event.title))}
-     ${all && win?.n ? `<div class="winner"><div class="eyebrow">🏆 Best challenge &amp; solution</div><div class="wn">${esc(win.t.name)}</div><div class="ws">${esc(workOf(S, win.t.id).title || win.t.ch?.title)}</div></div>` : ''}
-     <ol class="lb">${res.map((r, i) => { const shown = i >= n - S.reveal; return `<li class="${shown && i === 0 ? 'first' : ''} ${shown ? '' : 'hid'}"><span class="rk">${i + 1}</span>
-      <div><div class="nm">${shown ? esc(r.t.name) : '· · ·'}</div><div class="sub">${shown ? esc(workOf(S, r.t.id).title || r.t.ch?.title) : ''}</div></div><span class="sc">${shown ? r.avg.toFixed(1) : ''}</span></li>`; }).join('')}</ol>`;
   }
   return `<div class="proj">${inner}<div class="brand">${esc(S.event.eyebrow)}</div></div>`;
 }
@@ -430,13 +409,11 @@ function scheduleSave() {
 /* ---------- export ---------- */
 function exportCSV() {
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const head = ['Rank', 'Team', 'Type', 'Challenge', 'What happens today', 'Affects', 'Why it matters', 'Approved by',
-    ...Array.from({ length: WHYS }, (_, i) => 'Why ' + (i + 1)), 'Root cause', 'Solution', 'What we will do', 'How it works', 'Expected impact',
-    'Score /100', 'Panelists scored', ...CRIT.map((c) => c.k + ' (avg)')];
+  const head = ['Pitch order', 'Team', 'Type', 'Challenge', 'What happens today', 'Affects', 'Why it matters', 'Approved by',
+    ...Array.from({ length: WHYS }, (_, i) => 'Why ' + (i + 1)), 'Root cause', 'Solution', 'What we will do', 'How it works', 'Expected impact'];
   const out = [head.map(q).join(',')];
-  results(S).forEach((r, i) => { const c = r.t.ch || {}; const w = workOf(S, r.t.id);
-    out.push([i + 1, r.t.name, c.cat, c.title, c.problem, c.affects, c.why, c.by, ...w.whys, w.root, w.title, w.approach, w.impl, w.benefits,
-      r.avg.toFixed(1), r.n, ...r.critAvg.map((x) => x.toFixed(2))].map(q).join(',')); });
+  S.teams.forEach((t, i) => { const c = t.ch || {}; const w = workOf(S, t.id);
+    out.push([i + 1, t.name, c.cat, c.title, c.problem, c.affects, c.why, c.by, ...w.whys, w.root, w.title, w.approach, w.impl, w.benefits].map(q).join(',')); });
   const blob = new Blob(['﻿' + out.join('\r\n')], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'innovation-challenge-2026.csv';
   document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
@@ -461,14 +438,13 @@ document.addEventListener('click', async (e) => {
     case 'export': exportCSV(); return;
     case 'fullscreen': document.documentElement.requestFullscreen?.().catch(() => {}); return;
     case 'copy': navigator.clipboard?.writeText(id).then(() => toast('Sign-in link copied.'), () => prompt('Copy this link:', id)); return;
-    case 'reset-round': if (!confirm('Reset the whole event? This clears every challenge, root cause, solution and score on every device.')) return; break;
-    case 'demo-submit': case 'demo-approve': case 'demo-root': case 'demo-solution': case 'demo-scores': if (!confirm('Add rehearsal sample data to the live event?')) return; break;
+    case 'reset-round': if (!confirm('Reset the whole event? This clears every challenge, root cause and solution on every device.')) return; break;
+    case 'demo-submit': case 'demo-approve': case 'demo-root': case 'demo-solution': if (!confirm('Add rehearsal sample data to the live event?')) return; break;
     case 'phase':
       if (id === 'submit' && S.locked && !confirm('Go back to Stage 1? This unlocks the challenges so the panel can change them.')) return;
       break;
     case 'rename': { const name = document.getElementById('name-' + id)?.value || ''; if (await send({ type: 'rename', id, name })) { clearDrafts('name-' + id); render(); } return; }
     case 'refine': { const note = document.getElementById('note-' + id)?.value.trim() || ''; if (await send({ type: a, id, note })) { clearDrafts('note-' + id); render(); } return; }
-    case 'score': case 'submit-score': send({ type: a, team: b.dataset.team, c: b.dataset.c, v: b.dataset.v }); return;
   }
   send({ type: a, id });
 });

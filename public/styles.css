@@ -39,7 +39,7 @@ nav.roles button{border:1px solid var(--line);background:var(--surface);padding:
 nav.roles button[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 nav.roles small{display:block;font-weight:400;font-size:11px;opacity:.75;line-height:1.2}
 
-.stepper{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;padding-block:6px 18px}
+.stepper{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;padding-block:6px 18px}
 .step{border-top:3px solid var(--line);padding-top:6px;font-size:13px;min-width:0}
 .step b{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .step span{color:var(--muted);font-size:12px}
@@ -185,8 +185,3 @@ ul.plain{margin:0;padding-left:18px;color:var(--muted)}
 details summary{cursor:pointer;font-size:13px;color:var(--muted);font-weight:600}
 details[open] summary{margin-bottom:8px}
 .proj .brand{margin-top:auto;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--proj-muted)}
-.winner{background:linear-gradient(135deg,var(--proj-accent),#b0121c);color:#fff;border-radius:14px;padding:clamp(18px,3vw,32px);text-align:center}
-.winner .eyebrow{color:#fff;opacity:.9;font-size:clamp(14px,1.6vw,20px)}
-.winner .wn{font-family:var(--f-display);font-weight:700;font-size:clamp(44px,7vw,96px);line-height:1}
-.winner .ws{font-size:clamp(16px,2vw,24px);opacity:.92;margin-top:6px}
-@media (prefers-reduced-motion:no-preference){ .winner{animation:pop .6s ease-out} @keyframes pop{from{transform:scale(.92);opacity:0}to{transform:none;opacity:1}} }

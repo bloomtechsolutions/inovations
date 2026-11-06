@@ -4,10 +4,10 @@ A live, multi-device app for running the Innovation Challenge. Each role signs i
 
 | Role | Device | What it does |
 |---|---|---|
-| **Facilitator** | Laptop | Moves every screen between stages, runs the timers, renames teams, reveals results, downloads a CSV, sees every sign-in code |
+| **Facilitator** | Laptop | Moves every screen between stages, runs the timers, renames teams, downloads a CSV, sees every sign-in code |
 | **Team** (×6) | One per team, used by the team's representative | Enters the team's one challenge, then fills in the root cause (5 whys) and the solution |
-| **Panelist** (×2) | Laptop/tablet/phone | Approves challenges (one approval is enough) or sends them back with a comment, then scores each pitch |
-| **Projector** | Big screen | Read only: challenge board, locked challenges, big countdowns, pitch slide, results and winner |
+| **Panelist** (×2) | Laptop/tablet/phone | Approves challenges (one approval is enough) or sends them back with a comment, then follows each pitch |
+| **Projector** | Big screen | Read only: challenge board, locked challenges, big countdowns, pitch slide |
 
 ## Event flow
 
@@ -15,17 +15,7 @@ A live, multi-device app for running the Innovation Challenge. Each role signs i
 2. **Locked.** When all six challenges are approved, they lock automatically and the big screen shows them.
 3. **Root cause (5 min).** Teams ask "why?" up to five times and write down the root cause.
 4. **Solution (20 min).** Teams design a solution for that root cause. Their work saves as they type. When a timer runs out, saving stops (after a 15-second grace period).
-5. **Pitches (5 min each).** The big screen shows the team's challenge, root cause and solution with a countdown. Both panelists score each team from 1 to 5 on five weighted criteria:
-
-   | Criterion | Weight |
-   |---|---|
-   | Problem clarity & relevance | 20% |
-   | Root cause depth | 20% |
-   | Solution impact | 25% |
-   | Feasibility | 20% |
-   | Pitch quality | 15% |
-
-6. **Results.** The facilitator reveals the ranking from last place up. The top team wins **Best Challenge & Solution**.
+5. **Pitches (5 min each).** The big screen shows the team's challenge, root cause and solution with a countdown. Panelists see each team's full work on their device. After the last pitch, the panel chooses the best challenge and solution.
 
 The facilitator can pause any timer, add a minute, or move back a stage. Going back to Challenges unlocks them.
 
@@ -50,7 +40,7 @@ The server prints every sign-in code on start. Open `http://<server-ip>:3000` on
 
 ### Rehearsing
 
-At each stage the facilitator screen has rehearsal buttons that fill in sample challenges, root causes, solutions or scores, so you can click through the whole event. **Reset event** clears everything and keeps the sign-in codes. Before the real event, reset and set `SAMPLE_TOOLS=off`.
+At each stage the facilitator screen has rehearsal buttons that fill in sample challenges, root causes or solutions, so you can click through the whole event. **Reset event** clears everything and keeps the sign-in codes. Before the real event, reset and set `SAMPLE_TOOLS=off`.
 
 ## Hosting on Vercel + Supabase
 
@@ -69,7 +59,7 @@ Serverless functions can't keep state, so on Vercel the event is stored in Supab
 
 ## How it works
 
-- `shared/logic.js` holds the rules: who may do what, at which stage. The server runs it as the only source of truth, and the browser imports the same file for its views. Each device receives only what it is allowed to see. Teams never see scores or other teams' work before the pitches, and panelists see only their own scores.
+- `shared/logic.js` holds the rules: who may do what, at which stage. The server runs it as the only source of truth, and the browser imports the same file for its views. Each device receives only what it is allowed to see. Teams never see other teams' work before the pitches.
 - `shared/api.js` is the HTTP API, used by both `server.js` (local) and `api/index.js` (Vercel). Devices check `GET /api/state` about once a second, and the server answers `204` when nothing has changed. Writes use compare-and-swap on a version number, so two devices acting at the same moment never lose a change.
 - `public/` is the client: vanilla JS with no build step. Unsaved typing survives live updates from other devices.
 - Timers run on the server clock, so every screen shows the same countdown.

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { createState, apply, identify, redact, results, isUserError, remaining, timeUp, ROOT_SECONDS, SOLUTION_SECONDS } from '../shared/logic.js';
+import { createState, apply, identify, redact, isUserError, remaining, timeUp, ROOT_SECONDS, SOLUTION_SECONDS } from '../shared/logic.js';
 
 const config = JSON.parse(fs.readFileSync(new URL('../config.json', import.meta.url)));
 const samples = JSON.parse(fs.readFileSync(new URL('../samples.json', import.meta.url)));
@@ -22,14 +22,13 @@ test('six teams and two panelists, each with a code', () => {
   assert.equal(identify(S, 'nope'), null);
 });
 
-test('redaction hides codes, other panelists\' scores and other teams\' work', () => {
+test('redaction hides codes and other teams\' work', () => {
   const S = createState(config);
-  S.scores = { 0: { x: 1 }, 1: { y: 2 } }; S.work = { [S.teams[1].id]: { root: 'secret' } }; S.phase = 'root';
+  S.work = { [S.teams[1].id]: { root: 'secret' } }; S.phase = 'root';
   const forTeam = redact(S, teamMe(S, 0));
   assert.equal(forTeam.auth, undefined);
   assert.ok(forTeam.teams[0].code); assert.equal(forTeam.teams[1].code, undefined);
-  assert.deepEqual(forTeam.scores, {}); assert.deepEqual(forTeam.work, {});
-  assert.deepEqual(Object.keys(redact(S, P1).scores), ['1']);
+  assert.deepEqual(forTeam.work, {});
   assert.equal(redact(S, { role: 'projector' }).work[S.teams[1].id].root, '');
   assert.equal(redact(S, { role: 'projector' }).work[S.teams[1].id].hasRoot, true);
   assert.ok(redact(S, FAC).auth.facilitator);
@@ -78,20 +77,16 @@ test('root cause and solution saves stop when time is up', () => {
   assert.equal(S.work[S.teams[0].id].root, 'r2'); // root cause kept
 });
 
-test('panelists score pitches and results rank teams', () => {
+test('pitches are the last stage; teams see every pitch', () => {
   const S = createState(config); approveAll(S);
+  throwsUser(() => apply(S, FAC, { type: 'phase', id: 'results' }), /Unknown stage/);
+  apply(S, FAC, { type: 'phase', id: 'root' });
+  apply(S, teamMe(S, 1), { type: 'save-root', w: { root: 'r1' } });
   apply(S, FAC, { type: 'phase', id: 'pitch' });
-  const a = S.teams[0];
-  throwsUser(() => apply(S, P0, { type: 'submit-score', team: a.id }), /every/);
-  [5, 5, 5, 5, 5].forEach((v, c) => apply(S, P0, { type: 'score', team: a.id, c, v }));
-  apply(S, P0, { type: 'submit-score', team: a.id });
-  throwsUser(() => apply(S, P0, { type: 'score', team: a.id, c: 0, v: 1 }), /already/);
-  [3, 3, 3, 3, 3].forEach((v, c) => apply(S, P1, { type: 'score', team: a.id, c, v }));
-  apply(S, P1, { type: 'submit-score', team: a.id });
-  apply(S, FAC, { type: 'phase', id: 'results' });
-  const r = results(S);
-  assert.equal(r[0].t.id, a.id); assert.equal(r[0].avg, 80); assert.equal(r[0].n, 2);
-  assert.equal(redact(S, teamMe(S, 1)).scores[0][a.id].submitted, true); // visible to the room at results
+  assert.equal(redact(S, teamMe(S, 0)).work[S.teams[1].id].root, 'r1');
+  throwsUser(() => apply(S, P0, { type: 'score', team: S.teams[0].id, c: 0, v: 5 }), /Unknown action/);
+  for (let i = 0; i < 10; i++) apply(S, FAC, { type: 'next-team' });
+  assert.equal(S.pitchIdx, S.teams.length - 1);
 });
 
 test('rehearsal tools fill a complete event', () => {
@@ -103,8 +98,6 @@ test('rehearsal tools fill a complete event', () => {
   apply(S, FAC, { type: 'demo-solution' }, Date.now(), samples);
   assert.ok(S.teams.every((t) => S.work[t.id].root && S.work[t.id].title));
   apply(S, FAC, { type: 'phase', id: 'pitch' });
-  apply(S, FAC, { type: 'demo-scores' }, Date.now(), samples);
-  assert.ok(results(S).every((r) => r.n === 1));
   apply(S, FAC, { type: 'reset-round' });
   assert.equal(S.phase, 'submit');
   assert.ok(S.teams.every((t) => !t.ch));
