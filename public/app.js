@@ -378,7 +378,7 @@ function vProjector() {
   const fs = ME.role === 'projector' ? `<button class="btn small" data-act="fullscreen">Full screen</button>` : '';
   const top = (eyebrow, h) => `<div class="row between"><div><div class="eyebrow">${eyebrow}</div><h2>${h}</h2></div>${fs}</div>`;
   if (S.phase === 'submit') {
-    inner = `${top('Stage 1', 'Team challenges')}
+    inner = `${top('Stage 1', 'Current Challenges')}
      <div class="ptiles">${S.teams.map((t) => { const st = curStatus(t);
       return `<div class="ptile ${st === 'approved' ? 'ok' : ''}"><span class="tm">${esc(t.name)}</span><span class="ch ${t.ch ? '' : 'empty'}">${t.ch ? esc(t.ch.title) : 'Waiting for the challenge'}</span><span class="st">${t.ch ? esc(t.ch.cat) + ' · ' : ''}${st === 'approved' ? '✓ Approved' : statusLabel[st]}</span></div>`; }).join('')}</div>
      <div class="eyebrow">${approvedCount(S)} of ${n} approved</div>`;
